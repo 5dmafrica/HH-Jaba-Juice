@@ -16,7 +16,7 @@ import { format } from 'date-fns';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const FLAVORS = ['Tamarind', 'Watermelon', 'Beetroot', 'Pineapple', 'Hibiscus'];
+const FLAVORS = ['Tamarind', 'Watermelon', 'Beetroot', 'Pineapple', 'Hibiscus', 'Mixed Fruit'];
 const UNIT_PRICE = 500;
 
 const CreditInvoiceModule = ({ users, onRefresh }) => {
