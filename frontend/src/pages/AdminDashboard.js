@@ -13,7 +13,7 @@ import { Textarea } from '../components/ui/textarea';
 import { 
   Beer, ArrowLeft, Clock, Package, Users, AlertTriangle, FileText,
   Check, X, Plus, Minus, RefreshCw, Mail, Smartphone, CreditCard, Receipt,
-  Search, Gift, MessageSquare, Share2, Calendar, Bell, Trash2, ChevronDown, ChevronUp, Send, Shield
+  Search, Gift, MessageSquare, Share2, Calendar, Bell, Trash2, ChevronDown, ChevronUp, Send, Shield, Wrench, UserCog
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -25,8 +25,12 @@ const MONTHLY_CREDIT_LIMIT = 30000;
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, isSuperAdmin, checkAuth } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
+  
+  // Role Switcher State (Super Admin only)
+  const [activeRole, setActiveRole] = useState(user?.role || 'admin');
+  const [showRoleSwitcher, setShowRoleSwitcher] = useState(false);
   
   // Pending Orders State
   const [pendingOrders, setPendingOrders] = useState([]);
@@ -592,6 +596,47 @@ const AdminDashboard = () => {
     }
   };
 
+  // Role Switcher Functions (Super Admin only)
+  const switchRole = async (targetRole) => {
+    try {
+      await axios.post(`${API}/admin/switch-role?target_role=${targetRole}`, {}, { withCredentials: true });
+      setActiveRole(targetRole);
+      setShowRoleSwitcher(false);
+      
+      if (targetRole === 'user') {
+        toast.info('Switched to User view — redirecting to customer dashboard');
+        navigate('/dashboard');
+        return;
+      }
+      toast.success(`Switched to ${targetRole === 'super_admin' ? 'Super Admin' : 'Admin'} view`);
+      if (checkAuth) checkAuth();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to switch role');
+    }
+  };
+
+  const resetAllTestData = async () => {
+    if (!window.confirm('This will DELETE all orders, invoices, payments, disputes, and notifications. Are you sure?')) return;
+    try {
+      const response = await axios.post(`${API}/admin/maintenance/reset-test-data`, {}, { withCredentials: true });
+      toast.success(`Test data cleared: ${response.data.deleted.orders} orders, ${response.data.deleted.invoices} invoices, ${response.data.deleted.payments} payments`);
+      loadAllData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to reset data');
+    }
+  };
+
+  const resetDailyCounters = async () => {
+    if (!window.confirm("Reset today's order counters? This removes today's orders.")) return;
+    try {
+      const response = await axios.post(`${API}/admin/maintenance/reset-counters`, {}, { withCredentials: true });
+      toast.success(response.data.message);
+      fetchPendingOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to reset counters');
+    }
+  };
+
   useEffect(() => {
     if (activeTab === 'pending') fetchPendingOrders();
   }, [pendingFilter]);
@@ -616,12 +661,52 @@ const AdminDashboard = () => {
             </div>
             <div>
               <h1 className="font-display text-xl font-bold uppercase tracking-tight">
-                Admin Dashboard
+                {isSuperAdmin ? 'Super Admin' : 'Admin'} Dashboard
               </h1>
               <p className="text-xs text-gray-400">Happy Hour Jaba, Nairobi</p>
             </div>
           </div>
           <div className="flex gap-2 items-center">
+            {/* Role Switcher (Super Admin only) */}
+            {isSuperAdmin && (
+              <div className="relative" onClick={(e) => e.stopPropagation()}>
+                <Button
+                  data-testid="role-switcher-btn"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowRoleSwitcher(!showRoleSwitcher)}
+                  className="text-white hover:bg-gray-800 gap-1"
+                >
+                  <UserCog className="w-4 h-4" />
+                  <span className="text-xs hidden sm:inline">
+                    {activeRole === 'super_admin' ? 'SA' : activeRole === 'admin' ? 'Admin' : 'User'}
+                  </span>
+                </Button>
+                {showRoleSwitcher && (
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-white border-2 border-black rounded-lg shadow-brutal-lg z-50">
+                    <div className="p-2 border-b-2 border-black bg-gray-50">
+                      <p className="font-display text-xs uppercase font-bold text-black">Switch Role</p>
+                    </div>
+                    {['super_admin', 'admin', 'user'].map((r) => (
+                      <button
+                        key={r}
+                        data-testid={`switch-to-${r}`}
+                        onClick={() => switchRole(r)}
+                        className={`w-full p-3 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
+                          activeRole === r ? 'bg-hh-green/20 font-bold' : ''
+                        } text-black`}
+                      >
+                        <div className={`w-2 h-2 rounded-full ${
+                          r === 'super_admin' ? 'bg-purple-500' : r === 'admin' ? 'bg-hh-green' : 'bg-blue-500'
+                        }`} />
+                        {r === 'super_admin' ? 'Super Admin' : r === 'admin' ? 'Admin' : 'User'}
+                        {activeRole === r && <Check className="w-3 h-3 ml-auto text-black" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {/* Notification Bell */}
             <div className="relative">
               <Button
@@ -720,7 +805,7 @@ const AdminDashboard = () => {
       <main className="flex-1 p-4">
         <div className="max-w-6xl mx-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-4 sm:grid-cols-8 mb-6 border-2 border-black bg-white">
+            <TabsList className="grid w-full grid-cols-4 sm:grid-cols-9 mb-6 border-2 border-black bg-white">
               <TabsTrigger 
                 data-testid="tab-pending"
                 value="pending" 
@@ -797,6 +882,16 @@ const AdminDashboard = () => {
                   <Badge className="ml-1 bg-orange-500 text-white text-xs">{disputes.length}</Badge>
                 )}
               </TabsTrigger>
+              {isSuperAdmin && (
+                <TabsTrigger 
+                  data-testid="tab-maintenance"
+                  value="maintenance" 
+                  className="font-display uppercase text-xs data-[state=active]:bg-purple-500 data-[state=active]:text-white"
+                >
+                  <Wrench className="w-4 h-4 mr-1 hidden sm:block" />
+                  Maint
+                </TabsTrigger>
+              )}
             </TabsList>
 
             {/* PENDING ORDERS TAB */}
@@ -1569,6 +1664,82 @@ const AdminDashboard = () => {
                 </div>
               )}
             </TabsContent>
+            {/* MAINTENANCE TAB (Super Admin only) */}
+            {isSuperAdmin && (
+              <TabsContent value="maintenance" className="space-y-4">
+                <h2 className="font-display text-xl uppercase text-purple-700">Maintenance Tools</h2>
+                <p className="text-sm text-gray-500">
+                  Super Admin controls for testing and data management. Use with caution.
+                </p>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  {/* Reset All Test Data */}
+                  <div className="p-6 border-2 border-red-500 rounded-lg bg-red-50">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-10 h-10 bg-red-500 rounded-lg flex items-center justify-center">
+                        <Trash2 className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <p className="font-display font-bold uppercase">Reset All Test Data</p>
+                        <p className="text-xs text-gray-600">Clears ALL orders, invoices, payments, disputes, notifications</p>
+                      </div>
+                    </div>
+                    <Button
+                      data-testid="reset-all-data-btn"
+                      onClick={resetAllTestData}
+                      className="w-full bg-red-500 text-white border-2 border-red-700"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Reset All Test Data
+                    </Button>
+                  </div>
+
+                  {/* Reset Daily Counters */}
+                  <div className="p-6 border-2 border-yellow-500 rounded-lg bg-yellow-50">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-10 h-10 bg-yellow-500 rounded-lg flex items-center justify-center">
+                        <RefreshCw className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <p className="font-display font-bold uppercase">Reset Daily Counters</p>
+                        <p className="text-xs text-gray-600">Removes today's orders to reset bottle count limit</p>
+                      </div>
+                    </div>
+                    <Button
+                      data-testid="reset-counters-btn"
+                      onClick={resetDailyCounters}
+                      className="w-full bg-yellow-500 text-black border-2 border-yellow-700"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Reset Daily Counters
+                    </Button>
+                  </div>
+                </div>
+
+                {/* System Info */}
+                <div className="p-4 border-2 border-purple-300 rounded-lg bg-purple-50">
+                  <p className="font-display text-sm uppercase font-bold text-purple-700 mb-2">System Info</p>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="p-2 bg-white rounded border">
+                      <p className="text-xs text-gray-500">Role</p>
+                      <p className="font-bold text-purple-600">{activeRole}</p>
+                    </div>
+                    <div className="p-2 bg-white rounded border">
+                      <p className="text-xs text-gray-500">Email</p>
+                      <p className="font-bold">{user?.email}</p>
+                    </div>
+                    <div className="p-2 bg-white rounded border">
+                      <p className="text-xs text-gray-500">Daily Limit</p>
+                      <p className="font-bold">{activeRole === 'super_admin' ? 'UNLIMITED' : '10 bottles'}</p>
+                    </div>
+                    <div className="p-2 bg-white rounded border">
+                      <p className="text-xs text-gray-500">Credit Cap</p>
+                      <p className="font-bold">{activeRole === 'super_admin' ? 'UNLIMITED' : 'KES 30,000'}</p>
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </main>

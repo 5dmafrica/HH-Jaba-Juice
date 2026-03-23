@@ -28,6 +28,7 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 
 # Admin emails
 ADMIN_EMAILS = ['mavin@5dm.africa', 'yongo@5dm.africa']
+SUPER_ADMIN_EMAIL = 'mavin@5dm.africa'
 
 # Credit and Order Limits
 MONTHLY_CREDIT_LIMIT = 30000  # KES 30,000 per customer
@@ -268,9 +269,9 @@ async def get_current_user(request: Request) -> dict:
     return user_doc
 
 async def get_admin_user(request: Request) -> dict:
-    """Get current user and verify admin role"""
+    """Get current user and verify admin/super_admin role"""
     user = await get_current_user(request)
-    if user.get("role") != "admin":
+    if user.get("role") not in ("admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
@@ -460,7 +461,7 @@ async def exchange_session(request: Request, response: Response):
     else:
         # Create new user
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        role = "admin" if email in ADMIN_EMAILS else "user"
+        role = "super_admin" if email == SUPER_ADMIN_EMAIL else ("admin" if email in ADMIN_EMAILS else "user")
         
         new_user = {
             "user_id": user_id,
@@ -687,7 +688,7 @@ async def create_order(order_data: OrderCreate, request: Request):
         for order in today_orders
     )
     
-    if today_bottles + total_quantity > DAILY_ORDER_LIMIT:
+    if today_bottles + total_quantity > DAILY_ORDER_LIMIT and user.get("role") != "super_admin":
         raise HTTPException(
             status_code=400, 
             detail=f"Daily limit of {DAILY_ORDER_LIMIT} bottles reached. You've ordered {today_bottles} today."
@@ -713,7 +714,7 @@ async def create_order(order_data: OrderCreate, request: Request):
         
         month_credit_used = sum(order.get("total_amount", 0) for order in month_credit_orders)
         
-        if month_credit_used + total_amount > MONTHLY_CREDIT_LIMIT:
+        if month_credit_used + total_amount > MONTHLY_CREDIT_LIMIT and user.get("role") != "super_admin":
             raise HTTPException(
                 status_code=400, 
                 detail=f"Monthly credit limit of KES {MONTHLY_CREDIT_LIMIT:,} reached. You've used KES {month_credit_used:,} this month."
@@ -2209,6 +2210,95 @@ async def send_defaulter_warning(user_id: str, request: Request, template: str =
     wa_link = f"https://wa.me/{user.get('phone', '').replace('+', '').replace(' ', '')}?text={wa_message}"
     
     return {"message": f"Warning sent to {user.get('name')}", "whatsapp_link": wa_link}
+
+# ===== SUPER ADMIN ROUTES =====
+
+@api_router.post("/admin/switch-role")
+async def switch_role(request: Request, target_role: str = "super_admin"):
+    """Super Admin switches their viewing role for testing"""
+    user = await get_current_user(request)
+    
+    if user.get("email") != SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Only Super Admin can switch roles")
+    
+    if target_role not in ("super_admin", "admin", "user"):
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    # Store the impersonation role in the session (not the actual user role)
+    session_token = request.cookies.get("session_token")
+    await db.user_sessions.update_one(
+        {"session_token": session_token},
+        {"$set": {"impersonated_role": target_role}}
+    )
+    
+    # Update user role temporarily for the session
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"active_role": target_role}}
+    )
+    
+    return {"message": f"Switched to {target_role} view", "active_role": target_role}
+
+@api_router.get("/admin/current-role")
+async def get_current_role(request: Request):
+    """Get current active role for Super Admin"""
+    user = await get_current_user(request)
+    active_role = user.get("active_role", user.get("role", "user"))
+    is_super_admin = user.get("email") == SUPER_ADMIN_EMAIL or user.get("role") == "super_admin"
+    return {
+        "actual_role": user.get("role"),
+        "active_role": active_role,
+        "is_super_admin": is_super_admin
+    }
+
+@api_router.post("/admin/maintenance/reset-test-data")
+async def reset_test_data(request: Request):
+    """Super Admin resets all test orders and invoices"""
+    user = await get_current_user(request)
+    
+    if user.get("email") != SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Only Super Admin can reset test data")
+    
+    # Delete all orders
+    orders_result = await db.orders.delete_many({})
+    # Delete all credit invoices  
+    invoices_result = await db.credit_invoices.delete_many({})
+    # Delete all payment submissions
+    payments_result = await db.payment_submissions.delete_many({})
+    # Delete all dispute messages
+    disputes_result = await db.dispute_messages.delete_many({})
+    # Delete all notifications
+    notifs_result = await db.notifications.delete_many({})
+    
+    # Reset credit balances for all users
+    await db.users.update_many({}, {"$set": {"credit_balance": 10000.0}})
+    
+    return {
+        "message": "All test data cleared",
+        "deleted": {
+            "orders": orders_result.deleted_count,
+            "invoices": invoices_result.deleted_count,
+            "payments": payments_result.deleted_count,
+            "disputes": disputes_result.deleted_count,
+            "notifications": notifs_result.deleted_count
+        }
+    }
+
+@api_router.post("/admin/maintenance/reset-counters")
+async def reset_counters(request: Request):
+    """Super Admin resets daily/weekly order counters (by clearing today's orders)"""
+    user = await get_current_user(request)
+    
+    if user.get("email") != SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Only Super Admin can reset counters")
+    
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    result = await db.orders.delete_many({
+        "created_at": {"$gte": today_start.isoformat()},
+        "status": {"$in": ["pending", "fulfilled"]}
+    })
+    
+    return {"message": f"Reset {result.deleted_count} orders from today"}
 
 # ===== ROOT ROUTE =====
 
