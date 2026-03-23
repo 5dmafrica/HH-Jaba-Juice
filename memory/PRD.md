@@ -33,36 +33,35 @@ Mobile-first internal ordering system for 5DM employees to order Happy Hour Jaba
 - [x] Credit payment (instant fulfillment)
 - [x] M-Pesa payment (pending verification)
 - [x] Order history with filters
-- [x] Admin dashboard with 7 tabs (Pending, Stock, Reconcile, Defaulters, Credit Inv, Manual, Feedback)
-- [x] Pending orders management with auto-refresh
-- [x] Stock management with production info
-- [x] Credit reconciliation with detailed order breakdown
-- [x] Monthly defaulters tracking
-- [x] Manual invoice creation
-- [x] Credit Purchase Invoice module (create, view, print, delete)
+- [x] Admin dashboard with 6 tabs (Pending, Stock, Reconcile, Defaulters, Invoices, Feedback)
+- [x] Pending orders management (shows both pending + recent fulfilled, auto-refresh 10s)
+- [x] Stock management with production info (increment logic, batch ID, manufacturing date)
+- [x] Credit reconciliation with detailed order breakdown + Generate Invoice + Share Report + Delete User
+- [x] Monthly defaulters with per-item breakdown (Order ID, Timestamp, Flavor, Qty, Amount)
+- [x] Credit Purchase Invoice module (create, view, print, delete, WhatsApp share, Email share)
+- [x] Invoice supports both Credit (pay later) and Cash (auto-mark paid) payment types
+- [x] UUID-based invoice IDs (HHJ-INV-[Date]-[UUID5]) - no collisions
+- [x] Manual Invoices tab REMOVED - consolidated under Invoices
 - [x] Share Feedback system (user -> admin)
 - [x] Push Offer tool (admin -> all users)
-- [x] In-app notification system
+- [x] Real-time admin notifications (bell icon, dropdown, toast alerts, 15s polling)
 - [x] User invoices/notifications pages
 - [x] Email notifications (order confirmation)
-- [x] **Admin Delete Users** (with confirmation dialog)
-- [x] **Share Reconciliation Report** (date picker + email + in-app notification)
-- [x] **Real-time Admin Notifications** (polling bell icon with unread badge + toast alerts)
-- [x] **Detailed Order Breakdown in Reconciliation** (expandable per-item table: timestamp, flavor, qty, cost, status)
-- [x] **Credit Invoice Delete Button Fix** (proper error handling + encodeURIComponent)
+- [x] Admin: fulfill/cancel orders (cancel requires reason)
+- [x] Admin: delete users (with confirmation)
+- [x] Admin: share reconciliation reports (date range + email + notification)
 
 ## Prioritized Backlog
 
 ### P1 (High Priority - Next Phase)
 - [ ] M-Pesa Daraja API integration for automated payment verification
-- [ ] PDF invoice generation
+- [ ] PDF invoice generation (print-to-PDF currently available)
 - [ ] Object Storage integration for image uploads
 
 ### P2 (Medium Priority)
 - [ ] Monthly auto-reset of credit balances
 - [ ] Bulk order rejection
 - [ ] Export reports to CSV
-- [ ] Email statements for reconciliation
 
 ### P3 (Nice to Have)
 - [ ] WebSocket-based push notifications
@@ -70,5 +69,5 @@ Mobile-first internal ordering system for 5DM employees to order Happy Hour Jaba
 - [ ] Loyalty points system
 
 ## Refactoring Needed
-- Break down server.py (1700+ lines) into modular routers
-- Extract AdminDashboard.js (1400+ lines) tab content into separate components
+- Break down server.py (~1700 lines) into modular routers
+- Extract AdminDashboard.js (~1500 lines) tab content into separate components
