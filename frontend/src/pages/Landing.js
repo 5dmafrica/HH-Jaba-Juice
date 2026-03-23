@@ -30,7 +30,7 @@ const Landing = () => {
           {/* Hero Image */}
           <div className="relative mb-8">
             <img
-              src="https://images.unsplash.com/photo-1690983321954-30481504365f?auto=format&fit=crop&w=800&q=80"
+              src="https://images.unsplash.com/photo-1558642452-9d2a7deb7f62?auto=format&fit=crop&w=800&q=80"
               alt="Happy Hour Jaba"
               className="w-full h-64 object-cover border-2 border-black shadow-brutal rounded-lg"
             />

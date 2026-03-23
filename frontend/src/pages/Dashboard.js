@@ -236,11 +236,25 @@ const Dashboard = () => {
                   className="border-2 border-black rounded-lg overflow-hidden shadow-brutal-sm bg-white"
                 >
                   <div 
-                    className="h-20 relative"
-                    style={{ backgroundColor: product.color + '20' }}
+                    className="h-28 relative overflow-hidden"
+                    style={{ backgroundColor: product.color + '15' }}
                   >
+                    {product.image_url ? (
+                      <img 
+                        src={product.image_url} 
+                        alt={product.name}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <div 
+                          className="w-12 h-12 rounded-full border-2 border-black"
+                          style={{ backgroundColor: product.color }}
+                        />
+                      </div>
+                    )}
                     <div 
-                      className="absolute top-2 left-2 w-4 h-4 rounded-full border-2 border-black"
+                      className="absolute top-2 left-2 w-4 h-4 rounded-full border-2 border-black shadow-sm"
                       style={{ backgroundColor: product.color }}
                     />
                     {product.stock < 10 && (
