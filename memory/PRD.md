@@ -33,12 +33,23 @@ Mobile-first internal ordering system for 5DM employees to order Happy Hour Jaba
 - [x] Credit payment (instant fulfillment)
 - [x] M-Pesa payment (pending verification)
 - [x] Order history with filters
-- [x] Admin dashboard with 5 tabs
+- [x] Admin dashboard with 6 tabs
 - [x] Pending orders management
 - [x] Stock management
 - [x] Credit reconciliation view
 - [x] Monthly defaulters with VAT calculation
 - [x] Manual invoice creation
+- [x] **Credit Purchase Invoice module** (NEW)
+  - Invoice ID format: HHJ-INV-[Date]-[ID]
+  - Customer linked to user database
+  - Date range billing period
+  - Line items with flavor dropdown
+  - Unit price KES 500 (hardcoded)
+  - Auto-calculated line/total amounts
+  - Individual PAID/UNPAID status per line item
+  - Payment instructions (Airtel Money / 0733878020)
+  - Company contact (contact@myhappyhour.co.ke)
+  - Print/PDF export functionality
 - [x] Email notifications (order confirmation)
 
 ## Prioritized Backlog
