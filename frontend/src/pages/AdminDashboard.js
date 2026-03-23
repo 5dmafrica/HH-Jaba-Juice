@@ -66,6 +66,16 @@ const AdminDashboard = () => {
     loadAllData();
   }, [isAdmin, navigate]);
 
+  // Auto-refresh pending orders every 10 seconds when on pending tab
+  useEffect(() => {
+    if (activeTab === 'pending') {
+      const interval = setInterval(() => {
+        fetchPendingOrders();
+      }, 10000); // Refresh every 10 seconds
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, pendingFilter]);
+
   const loadAllData = async () => {
     setLoading(true);
     try {
@@ -325,8 +335,20 @@ const AdminDashboard = () => {
 
             {/* PENDING ORDERS TAB */}
             <TabsContent value="pending" className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl uppercase">Pending Orders</h2>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-display text-xl uppercase">Pending Orders</h2>
+                  <Button
+                    data-testid="refresh-pending-btn"
+                    variant="outline"
+                    size="sm"
+                    onClick={fetchPendingOrders}
+                    className="border-2 border-black"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </Button>
+                  <span className="text-xs text-gray-500">Auto-refreshes every 10s</span>
+                </div>
                 <Select value={pendingFilter} onValueChange={setPendingFilter}>
                   <SelectTrigger className="w-40 border-2 border-black">
                     <SelectValue />
