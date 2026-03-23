@@ -1,0 +1,126 @@
+{
+  "brand_identity": {
+    "name": "HH Jaba Staff Portal",
+    "tone": "Bold, Efficient, Internal-Social",
+    "description": "A mobile-first internal ordering system for 5DM Africa employees. It balances utility with a 'Happy Hour' vibe through high-contrast design."
+  },
+  "theme_strategy": {
+    "mode": "light",
+    "note": "Light mode base for clarity, but with heavy Black (#000000) usage for headers, footers, and borders to satisfy the 'Black secondary' requirement. High contrast aesthetic.",
+    "border_radius": "0.5rem"
+  },
+  "typography": {
+    "primary_font": "Barlow Condensed",
+    "secondary_font": "Manrope",
+    "google_fonts_import": "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Manrope:wght@400;500;600&display=swap",
+    "usage": {
+      "headings": "font-['Barlow_Condensed'] font-bold tracking-tight uppercase",
+      "body": "font-['Manrope'] text-base tracking-normal",
+      "labels": "font-['Barlow_Condensed'] font-semibold tracking-wide uppercase text-sm"
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": "#22c55e",
+      "secondary": "#000000",
+      "background": "#ffffff",
+      "surface": "#f4f4f5",
+      "error": "#ef4444",
+      "success": "#22c55e"
+    },
+    "flavor_colors": {
+      "tamarind": "#8B4513",
+      "watermelon": "#FF1493",
+      "beetroot": "#8B0000",
+      "pineapple": "#FFD700",
+      "hibiscus": "#DC143C"
+    },
+    "tailwind_config_extension": {
+      "colors": {
+        "hh-green": "#22c55e",
+        "hh-black": "#000000",
+        "flavor-tamarind": "#8B4513",
+        "flavor-watermelon": "#FF1493",
+        "flavor-beetroot": "#8B0000",
+        "flavor-pineapple": "#FFD700",
+        "flavor-hibiscus": "#DC143C"
+      }
+    }
+  },
+  "layout_grid": {
+    "mobile_first": true,
+    "strategy": "Single column stack for mobile. 'Bento' grid for desktop admin dashboard.",
+    "container": "w-full max-w-md mx-auto md:max-w-4xl px-4 md:px-8",
+    "spacing": {
+      "section_gap": "gap-8",
+      "element_gap": "gap-4",
+      "padding_standard": "p-6"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#22c55e] text-black hover:bg-[#16a34a] h-14 text-lg font-bold uppercase tracking-wide shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:shadow-none transition-all border-2 border-black",
+      "secondary": "bg-black text-[#22c55e] hover:bg-gray-900 h-14 text-lg font-bold uppercase tracking-wide border-2 border-black",
+      "outline": "bg-transparent text-black border-2 border-black hover:bg-black hover:text-white h-12 font-bold uppercase"
+    },
+    "cards": {
+      "style": "bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-4 rounded-lg",
+      "hover": "hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] transition-all duration-200"
+    },
+    "inputs": {
+      "style": "h-12 border-2 border-black focus:ring-2 focus:ring-[#22c55e] focus:border-black rounded-md bg-white text-lg px-4"
+    },
+    "flavor_selector": {
+      "wrapper": "grid grid-cols-2 gap-4",
+      "item": "aspect-square flex flex-col items-center justify-center rounded-xl border-2 border-black transition-all data-[state=checked]:ring-4 data-[state=checked]:ring-offset-2"
+    }
+  },
+  "visual_enhancers": {
+    "textures": "Use a subtle 'noise' or 'paper' texture on the background to reduce digital flatness.",
+    "shadows": "Hard shadows (Neo-brutalist style) to match the bold brand.",
+    "borders": "Thick 2px borders on all interactive elements.",
+    "animations": "Snappy, spring-based animations. No slow fades."
+  },
+  "image_assets": {
+    "hero_login": "https://images.unsplash.com/photo-1690983321954-30481504365f?auto=format&fit=crop&w=800&q=80",
+    "flavors": {
+      "tamarind": "https://images.unsplash.com/photo-1763178947953-ae2fdb2410f7?auto=format&fit=crop&w=600&q=80",
+      "watermelon": "https://images.unsplash.com/photo-1769777134533-41f68b35df0e?auto=format&fit=crop&w=600&q=80",
+      "beetroot": "https://images.pexels.com/photos/5668199/pexels-photo-5668199.jpeg?auto=compress&cs=tinysrgb&h=650&w=940",
+      "pineapple": "https://images.pexels.com/photos/21576286/pexels-photo-21576286.jpeg?auto=compress&cs=tinysrgb&h=650&w=940",
+      "hibiscus": "https://images.unsplash.com/photo-1763178947953-ae2fdb2410f7?auto=format&fit=crop&w=600&q=80"
+    },
+    "placeholders": {
+      "user_avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=JabaUser"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Stroke width 2px, black color."
+  },
+  "accessibility": {
+    "contrast": "Ensure Green text is only used on Black backgrounds, or Black text on Green backgrounds. Avoid Green text on White.",
+    "touch_targets": "Minimum 48px for all interactive elements."
+  },
+  "instructions_to_main_agent": [
+    "Install 'lucide-react' for icons.",
+    "Add 'Barlow Condensed' and 'Manrope' to index.html or import in CSS.",
+    "Configure Tailwind with the custom colors and extended spacing.",
+    "Create a 'Layout' component that handles the mobile-width constraint (max-w-md on mobile, centered).",
+    "For the Admin Dashboard, switch to a wider layout (max-w-6xl).",
+    "Use 'sonner' for toast notifications (Order confirmed, Stock low).",
+    "Implement the 'Neo-brutalist' shadow style (shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]) on cards and primary buttons."
+  ],
+  "universal_guidelines": {
+    "do_not": [
+      "Use gradients for the primary green.",
+      "Use rounded-full buttons (pill shape) unless it's a tag.",
+      "Use default shadcn slate colors - override with pure black/white."
+    ],
+    "must": [
+      "Use data-testid on all buttons and inputs.",
+      "Ensure the 'Order' button is sticky at the bottom on mobile view.",
+      "Show flavor colors vividly in the selection grid."
+    ]
+  }
+}
