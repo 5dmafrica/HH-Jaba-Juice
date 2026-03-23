@@ -741,13 +741,34 @@ async def create_order(order_data: OrderCreate, request: Request):
             {"$inc": {"stock": -item.quantity}}
         )
     
-    # Send confirmation email
+    # Send confirmation email to user
     order_doc = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
     await send_email(
         user.get("email", ""),
         f"Order Confirmed - HH Jaba #{order_id}",
         get_order_confirmation_html(order_doc, user)
     )
+    
+    # Notify all admins about new order
+    admins = await db.users.find({"role": "admin"}, {"_id": 0}).to_list(100)
+    items_summary = ", ".join([f"{item.product_name.replace('Happy Hour Jaba - ', '')} x{item.quantity}" for item in order_data.items])
+    
+    for admin in admins:
+        await db.notifications.insert_one({
+            "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            "user_id": admin["user_id"],
+            "title": "New Order Received",
+            "message": f"Order #{order_id} from {user.get('name', 'Customer')}: {items_summary}. Total: KES {total_amount:,}. Payment: {order_data.payment_method.upper()}",
+            "notification_type": "order",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {
+                "order_id": order_id,
+                "customer_name": user.get("name"),
+                "total_amount": total_amount,
+                "payment_method": order_data.payment_method
+            }
+        })
     
     return order_doc
 
@@ -1022,6 +1043,153 @@ async def get_all_users(request: Request):
     await get_admin_user(request)
     users = await db.users.find({}, {"_id": 0}).to_list(1000)
     return users
+
+@api_router.delete("/admin/users/{user_id}")
+async def delete_user(user_id: str, request: Request):
+    """Delete a user (admin only)"""
+    admin = await get_admin_user(request)
+    
+    # Prevent admin from deleting themselves
+    if admin["user_id"] == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    
+    # Check if user exists
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Don't allow deleting other admins
+    if user.get("role") == "admin":
+        raise HTTPException(status_code=400, detail="Cannot delete admin users")
+    
+    # Delete user's data
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.orders.delete_many({"user_id": user_id})
+    await db.notifications.delete_many({"user_id": user_id})
+    await db.credit_invoices.delete_many({"user_id": user_id})
+    await db.users.delete_one({"user_id": user_id})
+    
+    return {"message": f"User {user.get('name')} deleted successfully"}
+
+@api_router.get("/admin/users/{user_id}/reconciliation-report")
+async def get_user_reconciliation_report(user_id: str, request: Request, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Get detailed reconciliation report for a specific user (admin only)"""
+    await get_admin_user(request)
+    
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Build query for orders
+    query = {
+        "user_id": user_id,
+        "payment_method": "credit",
+        "status": {"$ne": "cancelled"}
+    }
+    
+    if start_date or end_date:
+        query["created_at"] = {}
+        if start_date:
+            query["created_at"]["$gte"] = start_date
+        if end_date:
+            query["created_at"]["$lte"] = end_date + "T23:59:59"
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    # Build detailed breakdown
+    order_breakdown = []
+    total_amount = 0
+    
+    for order in orders:
+        for item in order.get("items", []):
+            order_breakdown.append({
+                "order_id": order.get("order_id"),
+                "timestamp": order.get("created_at"),
+                "flavor": item.get("product_name", "").replace("Happy Hour Jaba - ", ""),
+                "quantity": item.get("quantity", 0),
+                "unit_price": item.get("price", UNIT_PRICE),
+                "cost": item.get("quantity", 0) * item.get("price", UNIT_PRICE),
+                "status": order.get("status")
+            })
+            total_amount += item.get("quantity", 0) * item.get("price", UNIT_PRICE)
+    
+    return {
+        "user": user,
+        "period": {
+            "start": start_date or "All time",
+            "end": end_date or "Present"
+        },
+        "order_breakdown": order_breakdown,
+        "total_amount": total_amount,
+        "outstanding_balance": MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT),
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+@api_router.post("/admin/users/{user_id}/send-reconciliation")
+async def send_reconciliation_report(user_id: str, request: Request):
+    """Send reconciliation report notification to user (admin only)"""
+    admin = await get_admin_user(request)
+    
+    body = await request.json()
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Calculate outstanding
+    outstanding = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
+    
+    # Create notification for user
+    period_text = f"{start_date} to {end_date}" if start_date and end_date else "current period"
+    
+    await db.notifications.insert_one({
+        "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": user_id,
+        "title": "Reconciliation Report",
+        "message": f"Your credit reconciliation report for {period_text} has been shared. Outstanding balance: KES {outstanding:,}. Please clear your balance before the new cycle begins.",
+        "notification_type": "invoice",
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "outstanding": outstanding
+        }
+    })
+    
+    # Also send email if configured
+    if user.get("email"):
+        await send_email(
+            user["email"],
+            f"Reconciliation Report - HH Jaba",
+            f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+                <div style="background:#22c55e;padding:20px;text-align:center;">
+                    <h1 style="color:#000;margin:0;">HH Jaba</h1>
+                </div>
+                <div style="padding:20px;background:#f9f9f9;">
+                    <h2 style="color:#333;">Reconciliation Report</h2>
+                    <p>Hi {user.get('name', 'Customer')},</p>
+                    <p>Your credit reconciliation report for <strong>{period_text}</strong> has been generated.</p>
+                    <div style="background:#fff;padding:15px;border:2px solid #000;margin:20px 0;">
+                        <p style="margin:0;font-size:14px;">Outstanding Balance:</p>
+                        <p style="margin:5px 0 0 0;font-size:24px;font-weight:bold;color:#dc2626;">KES {outstanding:,}</p>
+                    </div>
+                    <p><strong>Important:</strong> Please clear your balance before the new cycle begins (No Carry-Forward policy).</p>
+                    <p style="margin-top:20px;">Payment Details:</p>
+                    <p><strong>Airtel Money:</strong> 0733878020</p>
+                </div>
+                <div style="padding:10px;text-align:center;color:#666;font-size:12px;">
+                    <p>Happy Hour Jaba - 5DM Africa, Nairobi</p>
+                    <p>contact@myhappyhour.co.ke</p>
+                </div>
+            </div>
+            """
+        )
+    
+    return {"message": f"Reconciliation report sent to {user.get('name')}"}
 
 @api_router.post("/admin/manual-invoice")
 async def create_manual_invoice(invoice: ManualInvoiceCreate, request: Request):

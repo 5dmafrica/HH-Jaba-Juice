@@ -78,6 +78,16 @@ const AdminDashboard = () => {
   const [autoInvoiceStartDate, setAutoInvoiceStartDate] = useState('');
   const [autoInvoiceEndDate, setAutoInvoiceEndDate] = useState('');
   
+  // Share Reconciliation Report State
+  const [showShareReportDialog, setShowShareReportDialog] = useState(false);
+  const [reportUserId, setReportUserId] = useState('');
+  const [reportStartDate, setReportStartDate] = useState('');
+  const [reportEndDate, setReportEndDate] = useState('');
+  const [reportPreview, setReportPreview] = useState(null);
+  
+  // User to delete
+  const [userToDelete, setUserToDelete] = useState(null);
+  
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -285,6 +295,55 @@ const AdminDashboard = () => {
       setAutoInvoiceEndDate('');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to generate invoice');
+    }
+  };
+
+  // Fetch Reconciliation Report Preview
+  const fetchReportPreview = async (userId, startDate, endDate) => {
+    try {
+      const params = new URLSearchParams();
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const response = await axios.get(`${API}/admin/users/${userId}/reconciliation-report?${params.toString()}`, { withCredentials: true });
+      setReportPreview(response.data);
+    } catch (error) {
+      toast.error('Failed to fetch report');
+    }
+  };
+
+  // Share Reconciliation Report
+  const shareReconciliationReport = async () => {
+    if (!reportUserId) {
+      toast.error('Please select a user');
+      return;
+    }
+    try {
+      await axios.post(`${API}/admin/users/${reportUserId}/send-reconciliation`, {
+        start_date: reportStartDate,
+        end_date: reportEndDate
+      }, { withCredentials: true });
+      toast.success('Reconciliation report sent to user');
+      setShowShareReportDialog(false);
+      setReportUserId('');
+      setReportStartDate('');
+      setReportEndDate('');
+      setReportPreview(null);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send report');
+    }
+  };
+
+  // Delete User
+  const deleteUser = async (userId) => {
+    try {
+      await axios.delete(`${API}/admin/users/${userId}`, { withCredentials: true });
+      toast.success('User deleted successfully');
+      setUserToDelete(null);
+      fetchUsers();
+      fetchReconciliation();
+      fetchDefaulters();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to delete user');
     }
   };
 
