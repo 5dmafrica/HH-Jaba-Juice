@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../components/ui/dialog';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
-import { Beer, ArrowLeft, FileText, Check, Clock, Mail, MessageCircle, Send } from 'lucide-react';
+import { Beer, ArrowLeft, FileText, Check, Clock, Mail, MessageCircle, Send, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -31,6 +31,12 @@ const UserInvoices = () => {
   const [popPaymentMethod, setPopPaymentMethod] = useState('airtel_money');
   const [popPaymentType, setPopPaymentType] = useState('full');
   const [popNotes, setPopNotes] = useState('');
+  
+  // Dispute Chat State
+  const [showDisputeChat, setShowDisputeChat] = useState(false);
+  const [disputePopId, setDisputePopId] = useState('');
+  const [disputeMessages, setDisputeMessages] = useState([]);
+  const [newDisputeMsg, setNewDisputeMsg] = useState('');
 
   useEffect(() => {
     fetchInvoices();
@@ -89,6 +95,32 @@ const UserInvoices = () => {
     setPopPaymentMethod('airtel_money');
     setPopPaymentType('full');
     setPopNotes('');
+  };
+
+  const openDispute = async (popId) => {
+    setDisputePopId(popId);
+    setShowDisputeChat(true);
+    try {
+      const response = await axios.get(`${API}/disputes/${popId}/messages`, { withCredentials: true });
+      setDisputeMessages(response.data.messages || []);
+    } catch (error) {
+      setDisputeMessages([]);
+    }
+  };
+
+  const sendDisputeMessage = async () => {
+    if (!newDisputeMsg.trim() || !disputePopId) return;
+    try {
+      await axios.post(`${API}/disputes/message`, {
+        pop_id: disputePopId,
+        message: newDisputeMsg
+      }, { withCredentials: true });
+      setNewDisputeMsg('');
+      const response = await axios.get(`${API}/disputes/${disputePopId}/messages`, { withCredentials: true });
+      setDisputeMessages(response.data.messages || []);
+    } catch (error) {
+      toast.error('Failed to send message');
+    }
   };
 
   const shareViaWhatsApp = (invoice) => {
@@ -199,22 +231,46 @@ const UserInvoices = () => {
                     {pops.length > 0 && (
                       <div className="mb-3 space-y-1">
                         {pops.map(pop => (
-                          <div key={pop.pop_id} className={`p-2 rounded text-xs flex justify-between items-center ${
+                          <div key={pop.pop_id} className={`p-2 rounded text-xs ${
                             pop.status === 'approved' ? 'bg-green-50 border border-green-200' :
                             pop.status === 'rejected' ? 'bg-red-50 border border-red-200' :
+                            pop.status === 'verification_failed' ? 'bg-orange-50 border border-orange-200' :
                             'bg-yellow-50 border border-yellow-200'
                           }`}>
-                            <div>
-                              <span className="font-medium">{pop.transaction_code}</span>
-                              <span className="text-gray-500 ml-2">KES {pop.amount_paid?.toLocaleString()}</span>
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <span className="font-medium">{pop.transaction_code}</span>
+                                <span className="text-gray-500 ml-2">KES {pop.amount_paid?.toLocaleString()}</span>
+                              </div>
+                              <Badge className={`text-xs ${
+                                pop.status === 'approved' ? 'bg-green-500 text-white' :
+                                pop.status === 'rejected' ? 'bg-red-500 text-white' :
+                                pop.status === 'verification_failed' ? 'bg-orange-500 text-white' :
+                                'bg-yellow-400 text-black'
+                              }`}>
+                                {pop.status === 'verification_failed' ? 'FAILED' : pop.status}
+                              </Badge>
                             </div>
-                            <Badge className={`text-xs ${
-                              pop.status === 'approved' ? 'bg-green-500 text-white' :
-                              pop.status === 'rejected' ? 'bg-red-500 text-white' :
-                              'bg-yellow-400 text-black'
-                            }`}>
-                              {pop.status}
-                            </Badge>
+                            {pop.status === 'verification_failed' && (
+                              <div className="mt-2">
+                                {pop.decline_reason && (
+                                  <p className="text-orange-700 text-xs mb-1">{pop.decline_reason}</p>
+                                )}
+                                <Button
+                                  data-testid={`dispute-${pop.pop_id}`}
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openDispute(pop.pop_id)}
+                                  className="w-full border border-orange-500 text-orange-600 text-xs h-7 mt-1"
+                                >
+                                  <AlertTriangle className="w-3 h-3 mr-1" />
+                                  Raise Dispute
+                                </Button>
+                              </div>
+                            )}
+                            {pop.status === 'rejected' && pop.rejection_reason && (
+                              <p className="text-red-600 text-xs mt-1">Reason: {pop.rejection_reason}</p>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -354,6 +410,65 @@ const UserInvoices = () => {
             >
               <Send className="w-4 h-4 mr-2" />
               Submit Payment Proof
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dispute Chat Dialog */}
+      <Dialog open={showDisputeChat} onOpenChange={(open) => {
+        setShowDisputeChat(open);
+        if (!open) { setDisputePopId(''); setDisputeMessages([]); setNewDisputeMsg(''); }
+      }}>
+        <DialogContent className="max-w-md border-2 border-orange-400 shadow-brutal-lg max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="font-display text-lg uppercase">Dispute: {disputePopId}</DialogTitle>
+            <DialogDescription>
+              Chat with admin to resolve your payment verification issue
+            </DialogDescription>
+          </DialogHeader>
+          
+          {/* Chat Messages */}
+          <div className="flex-1 overflow-y-auto space-y-2 p-3 bg-gray-50 rounded-lg border min-h-[200px] max-h-[300px]">
+            {disputeMessages.length === 0 ? (
+              <p className="text-center text-gray-400 text-sm py-8">Start a conversation about this transaction</p>
+            ) : (
+              disputeMessages.map((msg) => (
+                <div
+                  key={msg.message_id}
+                  className={`p-2 rounded-lg max-w-[85%] ${
+                    msg.sender_role === 'admin' 
+                      ? 'bg-hh-green text-black border border-green-600' 
+                      : 'ml-auto bg-white border border-gray-300'
+                  }`}
+                >
+                  <p className="text-xs font-bold mb-1">
+                    {msg.sender_role === 'admin' ? 'Admin' : 'You'}
+                  </p>
+                  <p className="text-sm">{msg.message}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {msg.created_at ? format(new Date(msg.created_at), 'MMM dd, HH:mm') : ''}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+          
+          <div className="flex gap-2 mt-2">
+            <Input
+              data-testid="customer-dispute-input"
+              value={newDisputeMsg}
+              onChange={(e) => setNewDisputeMsg(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendDisputeMessage()}
+              className="flex-1 border-2 border-black"
+              placeholder="Describe the issue..."
+            />
+            <Button
+              data-testid="send-customer-dispute-btn"
+              onClick={sendDisputeMessage}
+              className="bg-orange-500 text-white border-2 border-orange-700"
+            >
+              <Send className="w-4 h-4" />
             </Button>
           </div>
         </DialogContent>

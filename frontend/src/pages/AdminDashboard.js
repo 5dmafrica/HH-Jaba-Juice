@@ -13,7 +13,7 @@ import { Textarea } from '../components/ui/textarea';
 import { 
   Beer, ArrowLeft, Clock, Package, Users, AlertTriangle, FileText,
   Check, X, Plus, Minus, RefreshCw, Mail, Smartphone, CreditCard, Receipt,
-  Search, Gift, MessageSquare, Share2, Calendar, Bell, Trash2, ChevronDown, ChevronUp, Send
+  Search, Gift, MessageSquare, Share2, Calendar, Bell, Trash2, ChevronDown, ChevronUp, Send, Shield
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -69,6 +69,24 @@ const AdminDashboard = () => {
   const [verifyRejectReason, setVerifyRejectReason] = useState('');
   const [verifyingPayment, setVerifyingPayment] = useState(null);
   const [showRejectDialog, setShowRejectDialog] = useState(false);
+  
+  // Transaction Match State
+  const [showMatchDialog, setShowMatchDialog] = useState(false);
+  const [matchingPop, setMatchingPop] = useState(null);
+  const [adminTxCode, setAdminTxCode] = useState('');
+  const [adminAmount, setAdminAmount] = useState('');
+  
+  // Force Approve State
+  const [showForceApproveDialog, setShowForceApproveDialog] = useState(false);
+  const [forceApprovePop, setForceApprovePop] = useState(null);
+  const [forceApproveReason, setForceApproveReason] = useState('');
+  
+  // Dispute Chat State
+  const [disputes, setDisputes] = useState([]);
+  const [selectedDispute, setSelectedDispute] = useState(null);
+  const [disputeMessages, setDisputeMessages] = useState([]);
+  const [newDisputeMsg, setNewDisputeMsg] = useState('');
+  const [showDisputeChat, setShowDisputeChat] = useState(false);
   
   // Backlog Credit Entry State
   const [showBacklogDialog, setShowBacklogDialog] = useState(false);
@@ -188,6 +206,7 @@ const AdminDashboard = () => {
         fetchReconciliation(),
         fetchDefaulters(),
         fetchPendingPayments(),
+        fetchDisputes(),
         fetchUsers(),
         fetchFeedback()
       ]);
@@ -430,16 +449,52 @@ const AdminDashboard = () => {
 
   // Manual Invoice Actions
   // Payment Verification Actions
-  const approvePayment = async (popId) => {
+  const matchTransaction = async () => {
+    if (!matchingPop || !adminTxCode || !adminAmount) {
+      toast.error('Please enter both transaction code and amount');
+      return;
+    }
     try {
-      await axios.post(`${API}/admin/payments/${popId}/verify`, {
-        status: 'approved'
+      const response = await axios.post(`${API}/admin/payments/${matchingPop.pop_id}/match`, {
+        admin_transaction_code: adminTxCode.toUpperCase(),
+        admin_amount: parseFloat(adminAmount)
       }, { withCredentials: true });
-      toast.success('Payment approved');
+      
+      if (response.data.status === 'approved') {
+        toast.success('Transaction matched and approved!');
+      } else {
+        toast.error(`Verification failed: ${response.data.message}`);
+      }
+      setShowMatchDialog(false);
+      setMatchingPop(null);
+      setAdminTxCode('');
+      setAdminAmount('');
       fetchPendingPayments();
+      fetchDisputes();
       fetchReconciliation();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to approve payment');
+      toast.error(error.response?.data?.detail || 'Match failed');
+    }
+  };
+
+  const forceApprovePayment = async () => {
+    if (!forceApprovePop || !forceApproveReason || forceApproveReason.trim().length < 5) {
+      toast.error('Please provide a detailed reason (min 5 chars)');
+      return;
+    }
+    try {
+      await axios.post(`${API}/admin/payments/${forceApprovePop.pop_id}/force-approve`, {
+        reason: forceApproveReason
+      }, { withCredentials: true });
+      toast.success('Payment force-approved');
+      setShowForceApproveDialog(false);
+      setForceApprovePop(null);
+      setForceApproveReason('');
+      fetchPendingPayments();
+      fetchDisputes();
+      fetchReconciliation();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Force approve failed');
     }
   };
 
@@ -449,7 +504,7 @@ const AdminDashboard = () => {
       return;
     }
     try {
-      await axios.post(`${API}/admin/payments/${verifyingPayment}/verify`, {
+      await axios.post(`${API}/admin/payments/${verifyingPayment}/reject`, {
         status: 'rejected',
         reason: verifyRejectReason
       }, { withCredentials: true });
@@ -460,6 +515,44 @@ const AdminDashboard = () => {
       fetchPendingPayments();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to reject payment');
+    }
+  };
+
+  // Dispute Chat Functions
+  const fetchDisputes = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/disputes`, { withCredentials: true });
+      setDisputes(response.data);
+    } catch (error) {
+      console.error('Failed to fetch disputes');
+    }
+  };
+
+  const openDisputeChat = async (dispute) => {
+    setSelectedDispute(dispute);
+    setShowDisputeChat(true);
+    try {
+      const response = await axios.get(`${API}/disputes/${dispute.pop_id}/messages`, { withCredentials: true });
+      setDisputeMessages(response.data.messages || []);
+    } catch (error) {
+      toast.error('Failed to load messages');
+    }
+  };
+
+  const sendAdminReply = async () => {
+    if (!newDisputeMsg.trim() || !selectedDispute) return;
+    try {
+      await axios.post(`${API}/disputes/message`, {
+        pop_id: selectedDispute.pop_id,
+        message: newDisputeMsg
+      }, { withCredentials: true });
+      setNewDisputeMsg('');
+      // Reload messages
+      const response = await axios.get(`${API}/disputes/${selectedDispute.pop_id}/messages`, { withCredentials: true });
+      setDisputeMessages(response.data.messages || []);
+      fetchDisputes();
+    } catch (error) {
+      toast.error('Failed to send message');
     }
   };
 
@@ -627,7 +720,7 @@ const AdminDashboard = () => {
       <main className="flex-1 p-4">
         <div className="max-w-6xl mx-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-7 mb-6 border-2 border-black bg-white">
+            <TabsList className="grid w-full grid-cols-4 sm:grid-cols-8 mb-6 border-2 border-black bg-white">
               <TabsTrigger 
                 data-testid="tab-pending"
                 value="pending" 
@@ -691,6 +784,17 @@ const AdminDashboard = () => {
                 Feedback
                 {feedback.filter(f => f.status === 'new').length > 0 && (
                   <Badge className="ml-1 bg-purple-500 text-white text-xs">{feedback.filter(f => f.status === 'new').length}</Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger 
+                data-testid="tab-messages"
+                value="messages" 
+                className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
+              >
+                <Mail className="w-4 h-4 mr-1 hidden sm:block" />
+                Messages
+                {disputes.length > 0 && (
+                  <Badge className="ml-1 bg-orange-500 text-white text-xs">{disputes.length}</Badge>
                 )}
               </TabsTrigger>
             </TabsList>
@@ -1250,7 +1354,7 @@ const AdminDashboard = () => {
                 </Button>
               </div>
               <p className="text-sm text-gray-500">
-                Verify customer proof-of-payment (POP) submissions. Airtel Money: <strong>0733878020</strong>
+                Match customer transactions against your Airtel Money records: <strong>0733878020</strong>
               </p>
               
               {pendingPayments.length === 0 ? (
@@ -1264,16 +1368,25 @@ const AdminDashboard = () => {
                     <div
                       key={pop.pop_id}
                       data-testid={`payment-${pop.pop_id}`}
-                      className="p-4 border-2 border-yellow-500 rounded-lg shadow-brutal-sm bg-yellow-50"
+                      className={`p-4 border-2 rounded-lg shadow-brutal-sm ${
+                        pop.status === 'verification_failed' 
+                          ? 'border-red-500 bg-red-50' 
+                          : 'border-yellow-500 bg-yellow-50'
+                      }`}
                     >
                       <div className="flex items-start justify-between mb-3">
                         <div>
                           <p className="font-display font-bold text-sm">{pop.user_name}</p>
                           <p className="text-xs text-gray-600">{pop.user_email}</p>
                         </div>
-                        <Badge className={pop.payment_type === 'full' ? 'bg-hh-green text-black' : 'bg-blue-500 text-white'}>
-                          {pop.payment_type}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          <Badge className={pop.payment_type === 'full' ? 'bg-hh-green text-black' : 'bg-blue-500 text-white'}>
+                            {pop.payment_type}
+                          </Badge>
+                          {pop.status === 'verification_failed' && (
+                            <Badge className="bg-red-500 text-white">FAILED</Badge>
+                          )}
+                        </div>
                       </div>
                       
                       <div className="grid grid-cols-2 gap-2 mb-3 text-sm">
@@ -1282,18 +1395,24 @@ const AdminDashboard = () => {
                           <p className="font-mono font-bold text-xs">{pop.invoice_id}</p>
                         </div>
                         <div className="p-2 bg-white rounded border">
-                          <p className="text-xs text-gray-500">Amount Paid</p>
-                          <p className="font-display font-bold text-hh-green">KES {pop.amount_paid.toLocaleString()}</p>
+                          <p className="text-xs text-gray-500">Customer Amount</p>
+                          <p className="font-display font-bold text-hh-green">KES {pop.amount_paid?.toLocaleString()}</p>
                         </div>
                         <div className="p-2 bg-white rounded border">
-                          <p className="text-xs text-gray-500">Transaction Code</p>
+                          <p className="text-xs text-gray-500">Customer Code</p>
                           <p className="font-mono font-bold text-xs">{pop.transaction_code}</p>
                         </div>
                         <div className="p-2 bg-white rounded border">
-                          <p className="text-xs text-gray-500">Payment Method</p>
+                          <p className="text-xs text-gray-500">Method</p>
                           <p className="text-xs font-medium">{pop.payment_method?.replace('_', ' ')}</p>
                         </div>
                       </div>
+                      
+                      {pop.decline_reason && (
+                        <div className="mb-3 p-2 bg-red-100 rounded border border-red-300 text-xs text-red-700">
+                          <strong>Decline reason:</strong> {pop.decline_reason}
+                        </div>
+                      )}
                       
                       {pop.notes && (
                         <p className="text-xs text-gray-600 mb-3 p-2 bg-white rounded border italic">
@@ -1305,16 +1424,37 @@ const AdminDashboard = () => {
                         Submitted: {pop.submitted_at ? format(new Date(pop.submitted_at), 'MMM dd, yyyy HH:mm') : '-'}
                       </p>
                       
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
                         <Button
-                          data-testid={`approve-payment-${pop.pop_id}`}
+                          data-testid={`match-payment-${pop.pop_id}`}
                           size="sm"
-                          onClick={() => approvePayment(pop.pop_id)}
-                          className="flex-1 bg-hh-green text-black border-2 border-black"
+                          onClick={() => {
+                            setMatchingPop(pop);
+                            setAdminTxCode('');
+                            setAdminAmount('');
+                            setShowMatchDialog(true);
+                          }}
+                          className="flex-1 bg-hh-green text-black border-2 border-black min-w-[80px]"
                         >
-                          <Check className="w-4 h-4 mr-1" />
-                          Approve
+                          <Check className="w-3 h-3 mr-1" />
+                          Match
                         </Button>
+                        {pop.status === 'verification_failed' && (
+                          <Button
+                            data-testid={`force-approve-${pop.pop_id}`}
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setForceApprovePop(pop);
+                              setForceApproveReason('');
+                              setShowForceApproveDialog(true);
+                            }}
+                            className="flex-1 border-2 border-purple-500 text-purple-600 min-w-[80px]"
+                          >
+                            <Shield className="w-3 h-3 mr-1" />
+                            Force Approve
+                          </Button>
+                        )}
                         <Button
                           data-testid={`reject-payment-${pop.pop_id}`}
                           size="sm"
@@ -1323,9 +1463,9 @@ const AdminDashboard = () => {
                             setVerifyingPayment(pop.pop_id);
                             setShowRejectDialog(true);
                           }}
-                          className="flex-1 border-2 border-red-500 text-red-500"
+                          className="border-2 border-red-500 text-red-500 min-w-[70px]"
                         >
-                          <X className="w-4 h-4 mr-1" />
+                          <X className="w-3 h-3 mr-1" />
                           Reject
                         </Button>
                       </div>
@@ -1338,6 +1478,59 @@ const AdminDashboard = () => {
             {/* CREDIT PURCHASE INVOICES TAB */}
             <TabsContent value="credit-invoices" className="space-y-4">
               <CreditInvoiceModule users={users} onRefresh={loadAllData} />
+            </TabsContent>
+
+            {/* MESSAGES / DISPUTE TAB */}
+            <TabsContent value="messages" className="space-y-4">
+              <h2 className="font-display text-xl uppercase">Dispute Messages</h2>
+              <p className="text-sm text-gray-500">
+                Customer inquiries linked to failed or disputed transactions
+              </p>
+              
+              {disputes.length === 0 ? (
+                <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg bg-white">
+                  <Check className="w-12 h-12 mx-auto text-hh-green mb-3" />
+                  <p className="text-gray-500">No active disputes</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {disputes.map((dispute) => (
+                    <div
+                      key={dispute.pop_id}
+                      data-testid={`dispute-${dispute.pop_id}`}
+                      className="p-4 border-2 border-orange-400 rounded-lg shadow-brutal-sm bg-orange-50 cursor-pointer hover:bg-orange-100 transition-colors"
+                      onClick={() => openDisputeChat(dispute)}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <p className="font-display font-bold text-sm">{dispute.user_name}</p>
+                          <p className="text-xs text-gray-500">
+                            {dispute.pop_id} | Invoice: {dispute.invoice_id}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge className={
+                            dispute.pop_status === 'verification_failed' ? 'bg-red-500 text-white' :
+                            dispute.pop_status === 'approved' ? 'bg-hh-green text-black' :
+                            'bg-yellow-400 text-black'
+                          }>
+                            {dispute.pop_status?.replace('_', ' ')}
+                          </Badge>
+                          <Badge className="bg-orange-500 text-white">
+                            {dispute.message_count} msg
+                          </Badge>
+                        </div>
+                      </div>
+                      <p className="text-sm text-gray-700 truncate">
+                        <span className="font-medium">{dispute.last_sender}:</span> {dispute.last_message}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {dispute.last_time ? format(new Date(dispute.last_time), 'MMM dd, HH:mm') : ''}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </TabsContent>
 
             {/* FEEDBACK TAB */}
@@ -1740,6 +1933,211 @@ const AdminDashboard = () => {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transaction Match Dialog */}
+      <Dialog open={showMatchDialog} onOpenChange={(open) => {
+        setShowMatchDialog(open);
+        if (!open) { setMatchingPop(null); setAdminTxCode(''); setAdminAmount(''); }
+      }}>
+        <DialogContent className="max-w-md border-2 border-black shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase">Match Transaction</DialogTitle>
+            <DialogDescription>
+              Enter the transaction details from your Airtel Money records
+            </DialogDescription>
+          </DialogHeader>
+          {matchingPop && (
+            <div className="space-y-4">
+              {/* Customer's Entry (read-only) */}
+              <div className="p-3 bg-gray-50 border-2 border-gray-200 rounded-lg">
+                <p className="text-xs text-gray-500 font-display uppercase mb-2">Customer Entry</p>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <p className="text-xs text-gray-500">Code</p>
+                    <p className="font-mono font-bold">{matchingPop.transaction_code}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">Amount</p>
+                    <p className="font-display font-bold">KES {matchingPop.amount_paid?.toLocaleString()}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Admin's Entry */}
+              <div className="p-3 bg-hh-green/10 border-2 border-hh-green rounded-lg space-y-3">
+                <p className="text-xs text-gray-700 font-display uppercase">Your Records (Airtel Money)</p>
+                <div>
+                  <Label className="font-display uppercase text-sm">Transaction Code *</Label>
+                  <Input
+                    data-testid="admin-tx-code"
+                    value={adminTxCode}
+                    onChange={(e) => setAdminTxCode(e.target.value.toUpperCase())}
+                    className="border-2 border-black uppercase"
+                    placeholder="Enter code from your records"
+                  />
+                </div>
+                <div>
+                  <Label className="font-display uppercase text-sm">Amount (KES) *</Label>
+                  <Input
+                    data-testid="admin-tx-amount"
+                    type="number"
+                    value={adminAmount}
+                    onChange={(e) => setAdminAmount(e.target.value)}
+                    className="border-2 border-black"
+                    placeholder="Enter amount from records"
+                  />
+                </div>
+              </div>
+
+              <Button
+                data-testid="submit-match-btn"
+                onClick={matchTransaction}
+                className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
+              >
+                <Check className="w-4 h-4 mr-2" />
+                Verify Match
+              </Button>
+              <p className="text-xs text-gray-500 text-center">
+                If codes and amounts match, payment is auto-approved. Mismatches will be flagged.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Force Approve Dialog */}
+      <Dialog open={showForceApproveDialog} onOpenChange={(open) => {
+        setShowForceApproveDialog(open);
+        if (!open) { setForceApprovePop(null); setForceApproveReason(''); }
+      }}>
+        <DialogContent className="max-w-md border-2 border-purple-500 shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase text-purple-700">Force Approve</DialogTitle>
+            <DialogDescription>
+              Override automated check and manually approve this payment. An audit trail will be recorded.
+            </DialogDescription>
+          </DialogHeader>
+          {forceApprovePop && (
+            <div className="space-y-4">
+              <div className="p-3 bg-purple-50 border-2 border-purple-200 rounded-lg text-sm">
+                <p><strong>POP:</strong> {forceApprovePop.pop_id}</p>
+                <p><strong>Customer:</strong> {forceApprovePop.user_name}</p>
+                <p><strong>Code:</strong> {forceApprovePop.transaction_code}</p>
+                <p><strong>Amount:</strong> KES {forceApprovePop.amount_paid?.toLocaleString()}</p>
+                {forceApprovePop.decline_reason && (
+                  <p className="text-red-600 mt-2"><strong>Original decline:</strong> {forceApprovePop.decline_reason}</p>
+                )}
+              </div>
+              
+              <div>
+                <Label className="font-display uppercase text-sm">Reason for Manual Override *</Label>
+                <Textarea
+                  data-testid="force-approve-reason"
+                  value={forceApproveReason}
+                  onChange={(e) => setForceApproveReason(e.target.value)}
+                  className="border-2 border-black min-h-[100px]"
+                  placeholder="e.g. Verified via direct call with customer, amount difference is bank charge, etc."
+                />
+              </div>
+              
+              <Button
+                data-testid="confirm-force-approve-btn"
+                onClick={forceApprovePayment}
+                className="w-full h-12 bg-purple-600 text-white border-2 border-purple-800"
+              >
+                <Shield className="w-4 h-4 mr-2" />
+                Force Approve Payment
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dispute Chat Dialog */}
+      <Dialog open={showDisputeChat} onOpenChange={(open) => {
+        setShowDisputeChat(open);
+        if (!open) { setSelectedDispute(null); setDisputeMessages([]); setNewDisputeMsg(''); }
+      }}>
+        <DialogContent className="max-w-lg border-2 border-orange-400 shadow-brutal-lg max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="font-display text-lg uppercase">
+              Dispute: {selectedDispute?.pop_id}
+            </DialogTitle>
+            <DialogDescription>
+              {selectedDispute?.user_name} | Invoice: {selectedDispute?.invoice_id} | Status: {selectedDispute?.pop_status?.replace('_', ' ')}
+            </DialogDescription>
+          </DialogHeader>
+          
+          {/* Chat Messages */}
+          <div className="flex-1 overflow-y-auto space-y-2 p-2 bg-gray-50 rounded-lg border min-h-[200px] max-h-[300px]">
+            {disputeMessages.length === 0 ? (
+              <p className="text-center text-gray-400 text-sm py-8">No messages yet</p>
+            ) : (
+              disputeMessages.map((msg) => (
+                <div
+                  key={msg.message_id}
+                  data-testid={`msg-${msg.message_id}`}
+                  className={`p-2 rounded-lg max-w-[85%] ${
+                    msg.sender_role === 'admin' 
+                      ? 'ml-auto bg-hh-green text-black border border-green-600' 
+                      : 'bg-white border border-gray-300'
+                  }`}
+                >
+                  <p className="text-xs font-bold mb-1">
+                    {msg.sender_role === 'admin' ? 'Admin' : msg.sender_name}
+                  </p>
+                  <p className="text-sm">{msg.message}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {msg.created_at ? format(new Date(msg.created_at), 'MMM dd, HH:mm') : ''}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+          
+          {/* Reply input */}
+          <div className="flex gap-2 mt-2">
+            <Input
+              data-testid="dispute-reply-input"
+              value={newDisputeMsg}
+              onChange={(e) => setNewDisputeMsg(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && sendAdminReply()}
+              className="flex-1 border-2 border-black"
+              placeholder="Type admin reply..."
+            />
+            <Button
+              data-testid="send-dispute-reply-btn"
+              onClick={sendAdminReply}
+              className="bg-hh-green text-black border-2 border-black"
+            >
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
+          
+          {/* Force Approve shortcut */}
+          {selectedDispute?.pop_status === 'verification_failed' && (
+            <Button
+              data-testid="chat-force-approve-btn"
+              onClick={() => {
+                setShowDisputeChat(false);
+                setForceApprovePop({
+                  pop_id: selectedDispute.pop_id,
+                  user_name: selectedDispute.user_name,
+                  transaction_code: selectedDispute.transaction_code,
+                  amount_paid: selectedDispute.amount_paid
+                });
+                setForceApproveReason('');
+                setShowForceApproveDialog(true);
+              }}
+              variant="outline"
+              className="w-full border-2 border-purple-500 text-purple-600"
+            >
+              <Shield className="w-4 h-4 mr-2" />
+              Resolve & Force Approve
+            </Button>
+          )}
         </DialogContent>
       </Dialog>
     </div>

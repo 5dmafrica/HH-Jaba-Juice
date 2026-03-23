@@ -165,6 +165,20 @@ class PaymentVerification(BaseModel):
     verified_amount: Optional[float] = None
     reason: Optional[str] = None
 
+# Transaction Match Model (Admin enters their records)
+class TransactionMatch(BaseModel):
+    admin_transaction_code: str
+    admin_amount: float
+
+# Force Approve Model
+class ForceApproval(BaseModel):
+    reason: str  # Mandatory reason for manual override
+
+# Dispute Message Model
+class DisputeMessage(BaseModel):
+    message: str
+    pop_id: str
+
 # Backlog Credit Entry Model
 class BacklogCreditEntry(BaseModel):
     user_id: str
@@ -1768,10 +1782,10 @@ async def get_my_pop_submissions(request: Request):
 
 @api_router.get("/admin/payments/pending")
 async def get_pending_payments(request: Request):
-    """Get all pending payment submissions (admin only)"""
+    """Get all pending/failed payment submissions (admin only)"""
     await get_admin_user(request)
     submissions = await db.payment_submissions.find(
-        {"status": "pending"},
+        {"status": {"$in": ["pending", "verification_failed"]}},
         {"_id": 0}
     ).sort("submitted_at", -1).to_list(1000)
     return submissions
@@ -1786,80 +1800,315 @@ async def get_all_payments(request: Request):
     ).sort("submitted_at", -1).to_list(1000)
     return submissions
 
-@api_router.post("/admin/payments/{pop_id}/verify")
-async def verify_payment(pop_id: str, verification: PaymentVerification, request: Request):
-    """Admin verifies or rejects a payment submission"""
+@api_router.post("/admin/payments/{pop_id}/match")
+async def match_transaction(pop_id: str, match_data: TransactionMatch, request: Request):
+    """Admin enters their transaction code/amount to match against customer's POP"""
     admin = await get_admin_user(request)
     
     pop = await db.payment_submissions.find_one({"pop_id": pop_id}, {"_id": 0})
     if not pop:
         raise HTTPException(status_code=404, detail="Payment submission not found")
     
-    if pop["status"] != "pending":
+    if pop["status"] not in ["pending", "verification_failed"]:
         raise HTTPException(status_code=400, detail="Payment already processed")
     
-    verified_amount = verification.verified_amount or pop["amount_paid"]
+    # Compare transaction codes and amounts
+    code_match = pop["transaction_code"].strip().upper() == match_data.admin_transaction_code.strip().upper()
+    amount_match = abs(pop["amount_paid"] - match_data.admin_amount) < 1  # Allow KES 1 tolerance
     
-    update_data = {
-        "status": verification.status,
-        "verified_amount": verified_amount,
-        "verified_at": datetime.now(timezone.utc).isoformat(),
-        "verified_by": admin.get("name", admin.get("email")),
-        "rejection_reason": verification.reason if verification.status == "rejected" else None
+    now = datetime.now(timezone.utc).isoformat()
+    admin_name = admin.get("name", admin.get("email"))
+    
+    # Build audit trail entry
+    audit_entry = {
+        "action": "transaction_match",
+        "admin": admin_name,
+        "timestamp": now,
+        "admin_code": match_data.admin_transaction_code.upper(),
+        "admin_amount": match_data.admin_amount,
+        "customer_code": pop["transaction_code"],
+        "customer_amount": pop["amount_paid"],
+        "code_match": code_match,
+        "amount_match": amount_match
     }
     
-    await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": update_data})
-    
-    # If approved, update invoice status and credit balance
-    if verification.status == "approved":
-        invoice = await db.credit_invoices.find_one({"invoice_id": pop["invoice_id"]}, {"_id": 0})
-        if invoice:
-            # Calculate total approved payments for this invoice
-            approved = await db.payment_submissions.find(
-                {"invoice_id": pop["invoice_id"], "status": "approved"},
-                {"_id": 0}
-            ).to_list(100)
-            total_paid = sum(p.get("verified_amount", 0) for p in approved) + verified_amount
-            
-            new_status = "paid" if total_paid >= invoice.get("total_amount", 0) else "partial"
-            await db.credit_invoices.update_one(
-                {"invoice_id": pop["invoice_id"]},
-                {"$set": {"status": new_status, "total_paid": total_paid}}
-            )
+    if code_match and amount_match:
+        # Match successful — auto-approve
+        verified_amount = match_data.admin_amount
         
-        # Restore credit balance proportional to payment
-        await db.users.update_one(
-            {"user_id": pop["user_id"]},
-            {"$inc": {"credit_balance": verified_amount}}
-        )
+        await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": {
+            "status": "approved",
+            "verified_amount": verified_amount,
+            "verified_at": now,
+            "verified_by": admin_name,
+            "admin_transaction_code": match_data.admin_transaction_code.upper(),
+            "admin_amount": match_data.admin_amount,
+            "match_method": "auto"
+        }, "$push": {"audit_trail": audit_entry}})
         
-        # Calculate remaining balance
-        user = await db.users.find_one({"user_id": pop["user_id"]}, {"_id": 0})
-        remaining = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", 0) if user else 0
+        # Update invoice and credit
+        await _apply_approved_payment(pop, verified_amount)
+        
+        return {"status": "approved", "message": "Transaction codes and amounts match. Payment approved."}
+    else:
+        # Mismatch — mark as verification_failed
+        reasons = []
+        if not code_match:
+            reasons.append(f"Code mismatch: Customer '{pop['transaction_code']}' vs Admin '{match_data.admin_transaction_code.upper()}'")
+        if not amount_match:
+            reasons.append(f"Amount mismatch: Customer KES {pop['amount_paid']:,.0f} vs Admin KES {match_data.admin_amount:,.0f}")
+        
+        decline_reason = "; ".join(reasons)
+        
+        await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": {
+            "status": "verification_failed",
+            "admin_transaction_code": match_data.admin_transaction_code.upper(),
+            "admin_amount": match_data.admin_amount,
+            "decline_reason": decline_reason,
+            "declined_at": now,
+            "declined_by": admin_name
+        }, "$push": {"audit_trail": audit_entry}})
         
         # Notify customer
         await db.notifications.insert_one({
             "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
             "user_id": pop["user_id"],
-            "title": "Payment Approved",
-            "message": f"Payment of KES {verified_amount:,.0f} for Invoice {pop['invoice_id']} has been approved. Updated balance owed: KES {max(0, remaining):,.0f}",
-            "notification_type": "payment",
+            "title": "Payment Declined",
+            "message": f"Payment for Invoice {pop['invoice_id']} verification failed. Reason: {decline_reason}. You can raise a dispute to resolve this.",
+            "notification_type": "payment_declined",
+            "pop_id": pop_id,
             "read": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": now
         })
-    else:
-        # Notify customer of rejection
+        
+        return {"status": "verification_failed", "message": decline_reason}
+
+@api_router.post("/admin/payments/{pop_id}/force-approve")
+async def force_approve_payment(pop_id: str, approval: ForceApproval, request: Request):
+    """Admin force-approves a failed transaction after chat resolution"""
+    admin = await get_admin_user(request)
+    
+    pop = await db.payment_submissions.find_one({"pop_id": pop_id}, {"_id": 0})
+    if not pop:
+        raise HTTPException(status_code=404, detail="Payment submission not found")
+    
+    if pop["status"] == "approved":
+        raise HTTPException(status_code=400, detail="Payment already approved")
+    
+    if not approval.reason or len(approval.reason.strip()) < 5:
+        raise HTTPException(status_code=400, detail="A detailed reason is required for manual override")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    admin_name = admin.get("name", admin.get("email"))
+    verified_amount = pop.get("admin_amount") or pop["amount_paid"]
+    
+    audit_entry = {
+        "action": "force_approve",
+        "admin": admin_name,
+        "timestamp": now,
+        "reason": approval.reason,
+        "amount": verified_amount
+    }
+    
+    await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": {
+        "status": "approved",
+        "verified_amount": verified_amount,
+        "verified_at": now,
+        "verified_by": admin_name,
+        "match_method": "force_approved",
+        "force_approve_reason": approval.reason
+    }, "$push": {"audit_trail": audit_entry}})
+    
+    # Update invoice and credit
+    await _apply_approved_payment(pop, verified_amount)
+    
+    return {"message": f"Payment force-approved by {admin_name}. Reason: {approval.reason}", "pop_id": pop_id}
+
+@api_router.post("/admin/payments/{pop_id}/reject")
+async def reject_payment_direct(pop_id: str, verification: PaymentVerification, request: Request):
+    """Admin rejects a payment submission"""
+    admin = await get_admin_user(request)
+    
+    pop = await db.payment_submissions.find_one({"pop_id": pop_id}, {"_id": 0})
+    if not pop:
+        raise HTTPException(status_code=404, detail="Payment submission not found")
+    
+    now = datetime.now(timezone.utc).isoformat()
+    admin_name = admin.get("name", admin.get("email"))
+    
+    audit_entry = {
+        "action": "rejected",
+        "admin": admin_name,
+        "timestamp": now,
+        "reason": verification.reason
+    }
+    
+    await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": {
+        "status": "rejected",
+        "verified_at": now,
+        "verified_by": admin_name,
+        "rejection_reason": verification.reason
+    }, "$push": {"audit_trail": audit_entry}})
+    
+    await db.notifications.insert_one({
+        "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": pop["user_id"],
+        "title": "Payment Rejected",
+        "message": f"Payment for Invoice {pop['invoice_id']} was rejected. Reason: {verification.reason or 'Not specified'}. Please resubmit.",
+        "notification_type": "payment",
+        "read": False,
+        "created_at": now
+    })
+    
+    return {"message": "Payment rejected", "pop_id": pop_id}
+
+async def _apply_approved_payment(pop: dict, verified_amount: float):
+    """Helper: Update invoice status and restore credit after approval"""
+    invoice = await db.credit_invoices.find_one({"invoice_id": pop["invoice_id"]}, {"_id": 0})
+    if invoice:
+        approved = await db.payment_submissions.find(
+            {"invoice_id": pop["invoice_id"], "status": "approved"},
+            {"_id": 0}
+        ).to_list(100)
+        total_paid = sum(p.get("verified_amount", 0) for p in approved)
+        new_status = "paid" if total_paid >= invoice.get("total_amount", 0) else "partial"
+        await db.credit_invoices.update_one(
+            {"invoice_id": pop["invoice_id"]},
+            {"$set": {"status": new_status, "total_paid": total_paid}}
+        )
+    
+    await db.users.update_one(
+        {"user_id": pop["user_id"]},
+        {"$inc": {"credit_balance": verified_amount}}
+    )
+    
+    user = await db.users.find_one({"user_id": pop["user_id"]}, {"_id": 0})
+    remaining = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", 0) if user else 0
+    
+    await db.notifications.insert_one({
+        "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": pop["user_id"],
+        "title": "Payment Approved",
+        "message": f"Payment of KES {verified_amount:,.0f} for Invoice {pop['invoice_id']} approved. Balance owed: KES {max(0, remaining):,.0f}",
+        "notification_type": "payment",
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+# ===== DISPUTE CHAT ROUTES =====
+
+@api_router.post("/disputes/message")
+async def send_dispute_message(msg: DisputeMessage, request: Request):
+    """Customer or admin sends a message linked to a POP transaction"""
+    user = await get_current_user(request)
+    
+    pop = await db.payment_submissions.find_one({"pop_id": msg.pop_id}, {"_id": 0})
+    if not pop:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Only allow the POP owner or admin to send messages
+    is_admin = user.get("role") == "admin"
+    if not is_admin and pop["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    message_id = f"MSG-{uuid.uuid4().hex[:8].upper()}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    message_doc = {
+        "message_id": message_id,
+        "pop_id": msg.pop_id,
+        "invoice_id": pop.get("invoice_id"),
+        "sender_id": user["user_id"],
+        "sender_name": user.get("name", ""),
+        "sender_role": user.get("role", "user"),
+        "message": msg.message,
+        "created_at": now
+    }
+    
+    await db.dispute_messages.insert_one(message_doc)
+    
+    # Notify the other party
+    if is_admin:
+        # Admin replied → notify customer
         await db.notifications.insert_one({
             "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
             "user_id": pop["user_id"],
-            "title": "Payment Rejected",
-            "message": f"Payment for Invoice {pop['invoice_id']} was rejected. Reason: {verification.reason or 'Not specified'}. Please resubmit with correct details.",
-            "notification_type": "payment",
+            "title": "Admin Reply on Dispute",
+            "message": f"Admin replied to your dispute for {msg.pop_id}: \"{msg.message[:80]}...\"" if len(msg.message) > 80 else f"Admin replied: \"{msg.message}\"",
+            "notification_type": "dispute",
+            "pop_id": msg.pop_id,
             "read": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": now
         })
+    else:
+        # Customer messaged → notify all admins
+        admins = await db.users.find({"role": "admin"}, {"_id": 0}).to_list(100)
+        for a in admins:
+            await db.notifications.insert_one({
+                "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+                "user_id": a["user_id"],
+                "title": f"Dispute Message from {user.get('name')}",
+                "message": f"Re: {msg.pop_id} — \"{msg.message[:80]}\"",
+                "notification_type": "dispute",
+                "pop_id": msg.pop_id,
+                "read": False,
+                "created_at": now
+            })
     
-    return {"message": f"Payment {verification.status}", "pop_id": pop_id}
+    return {"message_id": message_id}
+
+@api_router.get("/disputes/{pop_id}/messages")
+async def get_dispute_messages(pop_id: str, request: Request):
+    """Get all chat messages for a specific POP transaction"""
+    user = await get_current_user(request)
+    
+    pop = await db.payment_submissions.find_one({"pop_id": pop_id}, {"_id": 0})
+    if not pop:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    is_admin = user.get("role") == "admin"
+    if not is_admin and pop["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    messages = await db.dispute_messages.find(
+        {"pop_id": pop_id},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(500)
+    
+    return {"pop_id": pop_id, "invoice_id": pop.get("invoice_id"), "messages": messages}
+
+@api_router.get("/admin/disputes")
+async def get_all_disputes(request: Request):
+    """Get all POP transactions that have dispute messages (admin only)"""
+    await get_admin_user(request)
+    
+    # Find all unique pop_ids that have messages
+    pipeline = [
+        {"$group": {"_id": "$pop_id", "message_count": {"$sum": 1}, "last_message": {"$last": "$message"}, "last_sender": {"$last": "$sender_name"}, "last_time": {"$last": "$created_at"}}},
+        {"$sort": {"last_time": -1}}
+    ]
+    disputes = await db.dispute_messages.aggregate(pipeline).to_list(500)
+    
+    # Enrich with POP details
+    result = []
+    for d in disputes:
+        pop = await db.payment_submissions.find_one({"pop_id": d["_id"]}, {"_id": 0})
+        if pop:
+            result.append({
+                "pop_id": d["_id"],
+                "invoice_id": pop.get("invoice_id"),
+                "user_name": pop.get("user_name"),
+                "user_id": pop.get("user_id"),
+                "pop_status": pop.get("status"),
+                "amount_paid": pop.get("amount_paid"),
+                "transaction_code": pop.get("transaction_code"),
+                "message_count": d["message_count"],
+                "last_message": d["last_message"],
+                "last_sender": d["last_sender"],
+                "last_time": d["last_time"]
+            })
+    
+    return result
 
 # ===== BACKLOG CREDIT ENTRY =====
 
