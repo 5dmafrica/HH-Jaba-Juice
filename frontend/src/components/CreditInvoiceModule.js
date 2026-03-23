@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { 
-  Plus, Trash2, FileText, Download, Printer, Check, X, Calendar
+  Plus, Trash2, FileText, Download, Printer, Check, X, Calendar, Share2, Mail, MessageCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -32,6 +32,7 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
   const [billingEnd, setBillingEnd] = useState('');
   const [lineItems, setLineItems] = useState([{ flavor: '', quantity: 1, status: 'unpaid' }]);
   const [notes, setNotes] = useState('');
+  const [paymentType, setPaymentType] = useState('credit');
 
   useEffect(() => {
     fetchInvoices();
@@ -72,6 +73,7 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
     setBillingEnd('');
     setLineItems([{ flavor: '', quantity: 1, status: 'unpaid' }]);
     setNotes('');
+    setPaymentType('credit');
   };
 
   const handleCreateInvoice = async () => {
@@ -98,9 +100,10 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
           flavor: item.flavor,
           quantity: item.quantity,
           unit_price: UNIT_PRICE,
-          status: item.status
+          status: paymentType === 'cash' ? 'paid' : item.status
         })),
-        notes
+        notes,
+        payment_type: paymentType
       }, { withCredentials: true });
 
       toast.success('Invoice created successfully');
@@ -165,6 +168,17 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
     printWindow.document.write(generateInvoiceHTML(selectedInvoice));
     printWindow.document.close();
     printWindow.print();
+  };
+
+  const shareViaWhatsApp = (invoice) => {
+    const text = `*HH Jaba Invoice: ${invoice.invoice_id}*%0A%0ACustomer: ${invoice.customer_name}%0APeriod: ${format(new Date(invoice.billing_period_start), 'MMM dd')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}%0ATotal: KES ${invoice.total_amount.toLocaleString()}%0AStatus: ${invoice.status.toUpperCase()}%0A%0APayment: Airtel Money - 0733878020%0A%0AHappy Hour Jaba - 5DM Africa`;
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  };
+
+  const shareViaEmail = (invoice) => {
+    const subject = encodeURIComponent(`HH Jaba Invoice ${invoice.invoice_id}`);
+    const body = encodeURIComponent(`Dear ${invoice.customer_name},\n\nPlease find your invoice details below:\n\nInvoice: ${invoice.invoice_id}\nPeriod: ${format(new Date(invoice.billing_period_start), 'MMM dd, yyyy')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}\nTotal: KES ${invoice.total_amount.toLocaleString()}\nStatus: ${invoice.status.toUpperCase()}\n\nPayment: Airtel Money - 0733878020\n\nHappy Hour Jaba - 5DM Africa\ncontact@myhappyhour.co.ke`);
+    window.open(`mailto:${invoice.customer_email}?subject=${subject}&body=${body}`, '_blank');
   };
 
   const generateInvoiceHTML = (invoice) => {
@@ -338,7 +352,7 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                 ))}
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <Button
                   size="sm"
                   variant="outline"
@@ -350,6 +364,22 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                 >
                   <FileText className="w-4 h-4 mr-1" />
                   View
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => shareViaWhatsApp(invoice)}
+                  className="border-2 border-green-600 text-green-600"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => shareViaEmail(invoice)}
+                  className="border-2 border-blue-600 text-blue-600"
+                >
+                  <Mail className="w-4 h-4" />
                 </Button>
                 <Button
                   data-testid={`delete-credit-invoice-${invoice.invoice_id}`}
@@ -418,6 +448,23 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                   className="border-2 border-black"
                 />
               </div>
+            </div>
+
+            {/* Payment Type */}
+            <div>
+              <Label className="font-display uppercase text-sm">Payment Type *</Label>
+              <Select value={paymentType} onValueChange={setPaymentType}>
+                <SelectTrigger data-testid="payment-type-select" className="border-2 border-black">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="credit">Credit (Pay Later)</SelectItem>
+                  <SelectItem value="cash">Cash (Mark as Paid)</SelectItem>
+                </SelectContent>
+              </Select>
+              {paymentType === 'cash' && (
+                <p className="text-xs text-green-600 mt-1 font-medium">All line items will be auto-marked as PAID</p>
+              )}
             </div>
 
             {/* Line Items */}
@@ -644,18 +691,37 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
               </div>
 
               {/* Actions */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <Button
+                  data-testid="print-invoice-btn"
                   onClick={printInvoice}
-                  className="flex-1 bg-black text-white border-2 border-black"
+                  className="flex-1 bg-black text-white border-2 border-black min-w-[120px]"
                 >
                   <Printer className="w-4 h-4 mr-2" />
-                  Print / Download PDF
+                  Print / PDF
+                </Button>
+                <Button
+                  data-testid="share-whatsapp-btn"
+                  variant="outline"
+                  onClick={() => shareViaWhatsApp(selectedInvoice)}
+                  className="border-2 border-green-600 text-green-600 hover:bg-green-50"
+                >
+                  <MessageCircle className="w-4 h-4 mr-1" />
+                  WhatsApp
+                </Button>
+                <Button
+                  data-testid="share-email-btn"
+                  variant="outline"
+                  onClick={() => shareViaEmail(selectedInvoice)}
+                  className="border-2 border-blue-600 text-blue-600 hover:bg-blue-50"
+                >
+                  <Mail className="w-4 h-4 mr-1" />
+                  Email
                 </Button>
                 <Button
                   variant="outline"
                   onClick={() => handleDeleteInvoice(selectedInvoice.invoice_id)}
-                  className="border-2 border-red-500 text-red-500"
+                  className="border-2 border-red-500 text-red-500 hover:bg-red-50"
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>

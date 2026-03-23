@@ -598,7 +598,7 @@ const AdminDashboard = () => {
       <main className="flex-1 p-4">
         <div className="max-w-6xl mx-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-7 mb-6 border-2 border-black bg-white">
+            <TabsList className="grid w-full grid-cols-6 mb-6 border-2 border-black bg-white">
               <TabsTrigger 
                 data-testid="tab-pending"
                 value="pending" 
@@ -640,15 +640,7 @@ const AdminDashboard = () => {
                 className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
               >
                 <Receipt className="w-4 h-4 mr-1 hidden sm:block" />
-                Credit Inv
-              </TabsTrigger>
-              <TabsTrigger 
-                data-testid="tab-invoices"
-                value="invoices" 
-                className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
-              >
-                <FileText className="w-4 h-4 mr-1 hidden sm:block" />
-                Manual
+                Invoices
               </TabsTrigger>
               <TabsTrigger 
                 data-testid="tab-feedback"
@@ -694,7 +686,7 @@ const AdminDashboard = () => {
               {pendingOrders.length === 0 ? (
                 <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg bg-white">
                   <Check className="w-12 h-12 mx-auto text-hh-green mb-3" />
-                  <p className="text-gray-500">No pending orders</p>
+                  <p className="text-gray-500">No recent orders</p>
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2">
@@ -702,13 +694,29 @@ const AdminDashboard = () => {
                     <div
                       key={order.order_id}
                       data-testid={`pending-order-${order.order_id}`}
-                      className="p-4 border-2 border-black rounded-lg shadow-brutal-sm bg-white"
+                      className={`p-4 border-2 rounded-lg shadow-brutal-sm bg-white ${
+                        order.status === 'pending' ? 'border-yellow-500' : 'border-black'
+                      }`}
                     >
                       <div className="flex items-start justify-between mb-3">
                         <div>
-                          <p className="font-display font-bold">{order.order_id}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-display font-bold">{order.order_id}</p>
+                            <Badge className={`text-xs ${
+                              order.status === 'pending' ? 'bg-yellow-400 text-black' :
+                              order.status === 'fulfilled' ? 'bg-hh-green text-black' :
+                              'bg-red-500 text-white'
+                            }`}>
+                              {order.status}
+                            </Badge>
+                          </div>
                           <p className="text-sm text-gray-600">{order.user_name}</p>
                           <p className="text-xs text-gray-500">{order.user_phone}</p>
+                          {order.created_at && (
+                            <p className="text-xs text-gray-400 mt-1">
+                              {format(new Date(order.created_at), 'MMM dd, HH:mm')}
+                            </p>
+                          )}
                         </div>
                         <Badge className={order.payment_method === 'credit' ? 'bg-blue-500' : 'bg-green-500'}>
                           {order.payment_method === 'credit' ? <CreditCard className="w-3 h-3 mr-1" /> : <Smartphone className="w-3 h-3 mr-1" />}
@@ -733,26 +741,28 @@ const AdminDashboard = () => {
 
                       <div className="flex items-center justify-between pt-3 border-t">
                         <p className="font-display font-bold">KES {order.total_amount.toLocaleString()}</p>
-                        <div className="flex gap-2">
-                          <Button
-                            data-testid={`reject-order-${order.order_id}`}
-                            variant="outline"
-                            size="sm"
-                            onClick={() => rejectOrder(order.order_id)}
-                            className="border-2 border-red-500 text-red-500 hover:bg-red-50"
-                          >
-                            <X className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            data-testid={`fulfill-order-${order.order_id}`}
-                            size="sm"
-                            onClick={() => fulfillOrder(order.order_id)}
-                            className="bg-hh-green text-black border-2 border-black hover:bg-green-600"
-                          >
-                            <Check className="w-4 h-4 mr-1" />
-                            Fulfill
-                          </Button>
-                        </div>
+                        {order.status === 'pending' && (
+                          <div className="flex gap-2">
+                            <Button
+                              data-testid={`reject-order-${order.order_id}`}
+                              variant="outline"
+                              size="sm"
+                              onClick={() => rejectOrder(order.order_id)}
+                              className="border-2 border-red-500 text-red-500 hover:bg-red-50"
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              data-testid={`fulfill-order-${order.order_id}`}
+                              size="sm"
+                              onClick={() => fulfillOrder(order.order_id)}
+                              className="bg-hh-green text-black border-2 border-black hover:bg-green-600"
+                            >
+                              <Check className="w-4 h-4 mr-1" />
+                              Fulfill
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1005,7 +1015,20 @@ const AdminDashboard = () => {
                       </div>
 
                       {/* Action Buttons */}
-                      <div className="flex gap-2 mt-3 pt-3 border-t">
+                      <div className="flex gap-2 mt-3 pt-3 border-t flex-wrap">
+                        <Button
+                          data-testid={`generate-invoice-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setAutoInvoiceUserId(item.user.user_id);
+                            setShowAutoInvoiceDialog(true);
+                          }}
+                          className="flex-1 border-2 border-hh-green text-black bg-hh-green/10 text-sm min-w-[120px]"
+                        >
+                          <FileText className="w-3 h-3 mr-1" />
+                          Generate Invoice
+                        </Button>
                         <Button
                           data-testid={`share-report-${item.user.user_id}`}
                           size="sm"
@@ -1014,7 +1037,7 @@ const AdminDashboard = () => {
                             setReportUserId(item.user.user_id);
                             setShowShareReportDialog(true);
                           }}
-                          className="flex-1 border-2 border-black text-sm"
+                          className="flex-1 border-2 border-black text-sm min-w-[120px]"
                         >
                           <Send className="w-3 h-3 mr-1" />
                           Share Report
@@ -1029,8 +1052,7 @@ const AdminDashboard = () => {
                           }}
                           className="border-2 border-red-500 text-red-500 hover:bg-red-50 text-sm"
                         >
-                          <Trash2 className="w-3 h-3 mr-1" />
-                          Delete User
+                          <Trash2 className="w-3 h-3" />
                         </Button>
                       </div>
                     </div>
@@ -1089,17 +1111,41 @@ const AdminDashboard = () => {
                         </p>
                       </div>
                       
-                      <details className="mt-3">
-                        <summary className="cursor-pointer text-sm text-gray-600 hover:text-black">
-                          View {item.orders?.length || 0} orders
+                      <details className="mt-3" data-testid={`defaulter-orders-${item.user.user_id}`}>
+                        <summary className="cursor-pointer text-sm font-medium text-gray-700 hover:text-black">
+                          View {item.orders?.length || 0} order(s) breakdown
                         </summary>
-                        <div className="mt-2 space-y-2 text-sm">
-                          {item.orders?.slice(0, 5).map((order) => (
-                            <div key={order.order_id} className="flex justify-between p-2 bg-white rounded border">
-                              <span>{order.order_id}</span>
-                              <span>KES {order.total_amount?.toLocaleString()}</span>
-                            </div>
-                          ))}
+                        <div className="mt-2 border-2 border-gray-200 rounded-lg overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-red-900 text-white">
+                              <tr>
+                                <th className="p-2 text-left text-xs font-display uppercase">Order ID</th>
+                                <th className="p-2 text-left text-xs font-display uppercase">Timestamp</th>
+                                <th className="p-2 text-left text-xs font-display uppercase">Flavor</th>
+                                <th className="p-2 text-center text-xs font-display uppercase">Qty</th>
+                                <th className="p-2 text-right text-xs font-display uppercase">Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {item.orders?.map((order) =>
+                                (order.items || []).map((orderItem, idx) => (
+                                  <tr key={`${order.order_id}-${idx}`} className="border-t border-gray-100 hover:bg-red-50">
+                                    <td className="p-2 text-xs font-mono">{order.order_id}</td>
+                                    <td className="p-2 text-xs text-gray-600">
+                                      {order.created_at ? format(new Date(order.created_at), 'MMM dd, HH:mm') : '-'}
+                                    </td>
+                                    <td className="p-2 font-medium text-xs">
+                                      {(orderItem.product_name || '').replace('Happy Hour Jaba - ', '')}
+                                    </td>
+                                    <td className="p-2 text-center text-xs">{orderItem.quantity}</td>
+                                    <td className="p-2 text-right text-xs font-bold">
+                                      KES {((orderItem.quantity || 0) * (orderItem.price || 500)).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
                         </div>
                       </details>
                     </div>
@@ -1111,81 +1157,6 @@ const AdminDashboard = () => {
             {/* CREDIT PURCHASE INVOICES TAB */}
             <TabsContent value="credit-invoices" className="space-y-4">
               <CreditInvoiceModule users={users} onRefresh={loadAllData} />
-            </TabsContent>
-
-            {/* MANUAL INVOICES TAB */}
-            <TabsContent value="invoices" className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl uppercase">Manual Invoices</h2>
-                <Button
-                  data-testid="create-invoice-btn"
-                  onClick={() => setShowInvoiceDialog(true)}
-                  className="bg-hh-green text-black border-2 border-black shadow-brutal-sm"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Create Invoice
-                </Button>
-              </div>
-
-              {manualInvoices.length === 0 ? (
-                <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg bg-white">
-                  <FileText className="w-12 h-12 mx-auto text-gray-400 mb-3" />
-                  <p className="text-gray-500">No manual invoices</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {manualInvoices.map((invoice) => (
-                    <div
-                      key={invoice.invoice_id}
-                      data-testid={`invoice-${invoice.invoice_id}`}
-                      className="p-4 border-2 border-black rounded-lg shadow-brutal-sm bg-white"
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <p className="font-display font-bold">{invoice.invoice_id}</p>
-                          <p className="text-sm text-gray-600">
-                            {invoice.customer_name || users.find(u => u.user_id === invoice.user_id)?.name || 'Unknown'}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {format(new Date(invoice.created_at), 'MMM dd, yyyy')}
-                          </p>
-                        </div>
-                        <Badge className={
-                          invoice.status === 'verified' ? 'bg-hh-green text-black' :
-                          invoice.status === 'rejected' ? 'bg-red-500' : 'bg-yellow-400 text-black'
-                        }>
-                          {invoice.status}
-                        </Badge>
-                      </div>
-
-                      <p className="text-sm mb-2">{invoice.description}</p>
-                      <div className="flex items-center justify-between">
-                        <p className="font-display font-bold">KES {invoice.amount.toLocaleString()}</p>
-                        
-                        {invoice.status === 'pending' && (
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => rejectInvoice(invoice.invoice_id)}
-                              className="border-2 border-red-500 text-red-500"
-                            >
-                              <X className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              onClick={() => verifyInvoice(invoice.invoice_id)}
-                              className="bg-hh-green text-black border-2 border-black"
-                            >
-                              <Check className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </TabsContent>
 
             {/* FEEDBACK TAB */}
@@ -1227,105 +1198,6 @@ const AdminDashboard = () => {
           </Tabs>
         </div>
       </main>
-
-      {/* Create Invoice Dialog */}
-      <Dialog open={showInvoiceDialog} onOpenChange={setShowInvoiceDialog}>
-        <DialogContent className="max-w-md border-2 border-black shadow-brutal-lg">
-          <DialogHeader>
-            <DialogTitle className="font-display text-xl uppercase">Create Manual Invoice</DialogTitle>
-            <DialogDescription>Create an invoice for cash transactions</DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div>
-              <Label className="font-display uppercase text-sm">Customer</Label>
-              <Select 
-                value={invoiceForm.user_id} 
-                onValueChange={(v) => setInvoiceForm(prev => ({ ...prev, user_id: v }))}
-              >
-                <SelectTrigger className="border-2 border-black">
-                  <SelectValue placeholder="Select user (optional)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Manual Entry</SelectItem>
-                  {users.map(u => (
-                    <SelectItem key={u.user_id} value={u.user_id}>{u.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {invoiceForm.user_id === 'none' && (
-              <div>
-                <Label className="font-display uppercase text-sm">Customer Name</Label>
-                <Input
-                  value={invoiceForm.customer_name}
-                  onChange={(e) => setInvoiceForm(prev => ({ ...prev, customer_name: e.target.value }))}
-                  className="border-2 border-black"
-                  placeholder="Enter customer name"
-                />
-              </div>
-            )}
-
-            <div>
-              <Label className="font-display uppercase text-sm">Amount (KES)</Label>
-              <Input
-                type="number"
-                value={invoiceForm.amount}
-                onChange={(e) => setInvoiceForm(prev => ({ ...prev, amount: e.target.value }))}
-                className="border-2 border-black"
-                placeholder="500"
-              />
-            </div>
-
-            <div>
-              <Label className="font-display uppercase text-sm">Description</Label>
-              <Textarea
-                value={invoiceForm.description}
-                onChange={(e) => setInvoiceForm(prev => ({ ...prev, description: e.target.value }))}
-                className="border-2 border-black"
-                placeholder="e.g., Cash payment for 2 bottles"
-              />
-            </div>
-
-            <div>
-              <Label className="font-display uppercase text-sm">Payment Method</Label>
-              <Select 
-                value={invoiceForm.payment_method} 
-                onValueChange={(v) => setInvoiceForm(prev => ({ ...prev, payment_method: v }))}
-              >
-                <SelectTrigger className="border-2 border-black">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="credit">Credit</SelectItem>
-                  <SelectItem value="mpesa">M-Pesa</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {invoiceForm.payment_method === 'mpesa' && (
-              <div>
-                <Label className="font-display uppercase text-sm">M-Pesa Code</Label>
-                <Input
-                  value={invoiceForm.mpesa_code}
-                  onChange={(e) => setInvoiceForm(prev => ({ ...prev, mpesa_code: e.target.value.toUpperCase() }))}
-                  className="border-2 border-black uppercase"
-                  placeholder="ABC123XYZ"
-                />
-              </div>
-            )}
-
-            <Button
-              data-testid="submit-invoice-btn"
-              onClick={createManualInvoice}
-              className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
-            >
-              Create Invoice
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Cancel Order Dialog */}
       <Dialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>

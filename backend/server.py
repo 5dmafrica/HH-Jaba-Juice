@@ -165,6 +165,7 @@ class CreditInvoiceCreate(BaseModel):
     billing_period_end: str    # ISO date string
     line_items: List[CreditInvoiceLineItem]
     notes: Optional[str] = None
+    payment_type: str = "credit"  # 'credit' or 'cash'
 
 class CreditInvoice(BaseModel):
     invoice_id: str  # HHJ-INV-[Date]-[ID]
@@ -822,10 +823,18 @@ async def get_order(order_id: str, request: Request):
 
 @api_router.get("/admin/pending-orders")
 async def get_pending_orders(request: Request, payment_method: Optional[str] = None):
-    """Get all pending orders (admin only)"""
+    """Get all pending and recent orders (admin only)"""
     await get_admin_user(request)
     
-    query = {"status": "pending"}
+    # Show pending orders + recently fulfilled/created orders (last 2 hours)
+    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    
+    query = {
+        "$or": [
+            {"status": "pending"},
+            {"status": "fulfilled", "created_at": {"$gte": two_hours_ago}}
+        ]
+    }
     if payment_method and payment_method != "all":
         query["payment_method"] = payment_method
     
@@ -1163,7 +1172,7 @@ async def send_reconciliation_report(user_id: str, request: Request):
     if user.get("email"):
         await send_email(
             user["email"],
-            f"Reconciliation Report - HH Jaba",
+            "Reconciliation Report - HH Jaba",
             f"""
             <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
                 <div style="background:#22c55e;padding:20px;text-align:center;">
@@ -1265,14 +1274,14 @@ async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Requ
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Generate invoice ID: HHJ-INV-[Date]-[ID]
+    # Generate unique invoice ID: HHJ-INV-[Date]-[UUID]
     date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
-    # Get count of invoices today for sequential numbering
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = await db.credit_invoices.count_documents({
-        "created_at": {"$gte": today_start.isoformat()}
-    })
-    invoice_id = f"HHJ-INV-{date_str}-{str(today_count + 1).zfill(3)}"
+    unique_suffix = uuid.uuid4().hex[:5].upper()
+    invoice_id = f"HHJ-INV-{date_str}-{unique_suffix}"
+    
+    # Determine status based on payment type
+    is_cash = invoice_data.payment_type == "cash"
+    default_item_status = "paid" if is_cash else "unpaid"
     
     # Process line items and calculate totals
     processed_items = []
@@ -1285,7 +1294,7 @@ async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Requ
             "quantity": item.quantity,
             "unit_price": item.unit_price,
             "line_total": line_total,
-            "status": item.status
+            "status": default_item_status if is_cash else item.status
         })
         subtotal += line_total
     
@@ -1301,11 +1310,11 @@ async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Requ
         "line_items": processed_items,
         "subtotal": subtotal,
         "total_amount": subtotal,
-        "status": "unpaid",
+        "status": "paid" if is_cash else "unpaid",
+        "payment_type": invoice_data.payment_type,
         "notes": invoice_data.notes,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": admin.get("name", admin.get("email", "Admin")),
-        # Company details for invoice
         "company_email": "contact@myhappyhour.co.ke",
         "payment_method": "Airtel Money",
         "payment_number": "0733878020"
@@ -1313,7 +1322,9 @@ async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Requ
     
     await db.credit_invoices.insert_one(invoice_doc)
     
-    return await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+    # Use the unique invoice_id we just generated
+    result = await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+    return result
 
 @api_router.get("/admin/credit-invoices")
 async def get_credit_invoices(request: Request, user_id: Optional[str] = None):
@@ -1492,13 +1503,10 @@ async def auto_generate_invoice(user_id: str, request: Request):
                 "order_date": order.get("created_at")
             })
     
-    # Generate invoice ID
+    # Generate unique invoice ID
     date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = await db.credit_invoices.count_documents({
-        "created_at": {"$gte": today_start.isoformat()}
-    })
-    invoice_id = f"HHJ-INV-{date_str}-{str(today_count + 1).zfill(3)}"
+    unique_suffix = uuid.uuid4().hex[:5].upper()
+    invoice_id = f"HHJ-INV-{date_str}-{unique_suffix}"
     
     # Calculate total
     total_amount = sum(item["line_total"] for item in line_items)
