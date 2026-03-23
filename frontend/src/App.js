@@ -11,6 +11,8 @@ import ProfileSetup from "./pages/ProfileSetup";
 import Dashboard from "./pages/Dashboard";
 import OrderHistory from "./pages/OrderHistory";
 import AdminDashboard from "./pages/AdminDashboard";
+import UserInvoices from "./pages/UserInvoices";
+import Notifications from "./pages/Notifications";
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -76,6 +78,8 @@ function AppRouter() {
       <Route path="/profile-setup" element={<ProtectedRoute><ProfileSetup /></ProtectedRoute>} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><OrderHistory /></ProtectedRoute>} />
+      <Route path="/invoices" element={<ProtectedRoute><UserInvoices /></ProtectedRoute>} />
+      <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

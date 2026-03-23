@@ -29,6 +29,12 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 # Admin emails
 ADMIN_EMAILS = ['mavin@5dm.africa', 'yongo@5dm.africa']
 
+# Credit and Order Limits
+MONTHLY_CREDIT_LIMIT = 30000  # KES 30,000 per customer
+DAILY_ORDER_LIMIT = 10  # 10 bottles per day
+WEEKLY_CREDIT_LIMIT = 10  # 10 bottles per week on credit
+UNIT_PRICE = 500  # KES 500 per bottle
+
 # Create the main app
 app = FastAPI()
 
@@ -124,13 +130,34 @@ class ManualInvoiceCreate(BaseModel):
 
 class StockUpdate(BaseModel):
     stock: int
+    manufacturing_date: Optional[str] = None
+    batch_id: Optional[str] = None
+    increment: bool = True  # If True, add to existing stock; if False, set absolute value
+
+# Order Cancellation Model
+class OrderCancellation(BaseModel):
+    reason: str
+
+# Feedback Model
+class FeedbackCreate(BaseModel):
+    message: str
+    subject: Optional[str] = None
+
+# Notification Model
+class NotificationCreate(BaseModel):
+    title: str
+    message: str
+    notification_type: str = "general"  # 'offer', 'invoice', 'general'
+    target_users: Optional[List[str]] = None  # None means all users
 
 # Credit Purchase Invoice Models
 class CreditInvoiceLineItem(BaseModel):
-    flavor: str  # Tamarind, Watermelon, Beetroot, Pineapple, Hibiscus
+    flavor: str  # Tamarind, Watermelon, Beetroot, Pineapple, Hibiscus, Mixed Fruit
     quantity: int
     unit_price: float = 500.0
     status: str = "unpaid"  # 'paid' or 'unpaid'
+    order_id: Optional[str] = None
+    order_date: Optional[str] = None
 
 class CreditInvoiceCreate(BaseModel):
     user_id: str
@@ -519,22 +546,55 @@ async def get_all_products(request: Request):
 
 @api_router.put("/products/{product_id}/stock")
 async def update_stock(product_id: str, stock_update: StockUpdate, request: Request):
-    """Update product stock (admin only)"""
+    """Update product stock (admin only) - increments by default"""
     await get_admin_user(request)
     
-    result = await db.products.update_one(
-        {"product_id": product_id},
-        {"$set": {
-            "stock": stock_update.stock,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    if result.matched_count == 0:
+    product = await db.products.find_one({"product_id": product_id}, {"_id": 0})
+    if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
-    product = await db.products.find_one({"product_id": product_id}, {"_id": 0})
-    return product
+    # Build update document
+    update_doc = {
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Add production info if provided
+    if stock_update.manufacturing_date:
+        update_doc["last_manufacturing_date"] = stock_update.manufacturing_date
+    if stock_update.batch_id:
+        update_doc["last_batch_id"] = stock_update.batch_id
+    
+    # Increment or set stock based on flag
+    if stock_update.increment:
+        # Add to existing stock
+        result = await db.products.update_one(
+            {"product_id": product_id},
+            {
+                "$inc": {"stock": stock_update.stock},
+                "$set": update_doc
+            }
+        )
+        
+        # Log stock entry
+        await db.stock_entries.insert_one({
+            "entry_id": f"STK-{uuid.uuid4().hex[:8].upper()}",
+            "product_id": product_id,
+            "product_name": product.get("name"),
+            "quantity_added": stock_update.stock,
+            "manufacturing_date": stock_update.manufacturing_date,
+            "batch_id": stock_update.batch_id,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    else:
+        # Set absolute value
+        update_doc["stock"] = stock_update.stock
+        result = await db.products.update_one(
+            {"product_id": product_id},
+            {"$set": update_doc}
+        )
+    
+    updated_product = await db.products.find_one({"product_id": product_id}, {"_id": 0})
+    return updated_product
 
 @api_router.delete("/products/{product_id}")
 async def delete_product(product_id: str, request: Request):
@@ -573,10 +633,10 @@ async def create_order(order_data: OrderCreate, request: Request):
     if total_quantity == 0:
         raise HTTPException(status_code=400, detail="Order must have at least one item")
     
-    if total_quantity > 5:
-        raise HTTPException(status_code=400, detail="Maximum 5 bottles per order")
+    if total_quantity > DAILY_ORDER_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Maximum {DAILY_ORDER_LIMIT} bottles per order")
     
-    # Check daily limit (5 bottles any payment method)
+    # Check daily limit (10 bottles any payment method)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     today_orders = await db.orders.find({
         "user_id": user["user_id"],
@@ -589,10 +649,10 @@ async def create_order(order_data: OrderCreate, request: Request):
         for order in today_orders
     )
     
-    if today_bottles + total_quantity > 5:
+    if today_bottles + total_quantity > DAILY_ORDER_LIMIT:
         raise HTTPException(
             status_code=400, 
-            detail=f"Daily limit of 5 bottles reached. You've ordered {today_bottles} today."
+            detail=f"Daily limit of {DAILY_ORDER_LIMIT} bottles reached. You've ordered {today_bottles} today."
         )
     
     # For credit payments, check additional limits
@@ -604,7 +664,24 @@ async def create_order(order_data: OrderCreate, request: Request):
                 detail="Insufficient credit balance"
             )
         
-        # Check weekly credit limit (5 bottles per week)
+        # Check monthly credit limit (30,000 KES)
+        month_start = today_start.replace(day=1)
+        month_credit_orders = await db.orders.find({
+            "user_id": user["user_id"],
+            "payment_method": "credit",
+            "created_at": {"$gte": month_start.isoformat()},
+            "status": {"$ne": "cancelled"}
+        }, {"_id": 0}).to_list(1000)
+        
+        month_credit_used = sum(order.get("total_amount", 0) for order in month_credit_orders)
+        
+        if month_credit_used + total_amount > MONTHLY_CREDIT_LIMIT:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Monthly credit limit of KES {MONTHLY_CREDIT_LIMIT:,} reached. You've used KES {month_credit_used:,} this month."
+            )
+        
+        # Check weekly credit limit (10 bottles per week)
         week_start = today_start - timedelta(days=today_start.weekday())
         week_orders = await db.orders.find({
             "user_id": user["user_id"],
@@ -618,10 +695,10 @@ async def create_order(order_data: OrderCreate, request: Request):
             for order in week_orders
         )
         
-        if week_bottles + total_quantity > 5:
+        if week_bottles + total_quantity > WEEKLY_CREDIT_LIMIT:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Weekly credit limit of 5 bottles reached. You've used {week_bottles} on credit this week."
+                detail=f"Weekly credit limit of {WEEKLY_CREDIT_LIMIT} bottles reached. You've used {week_bottles} on credit this week."
             )
         
         # Deduct credit
@@ -776,9 +853,63 @@ async def fulfill_order(order_id: str, request: Request):
     updated_order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
     return updated_order
 
+@api_router.post("/admin/orders/{order_id}/cancel")
+async def cancel_order(order_id: str, cancellation: OrderCancellation, request: Request):
+    """Cancel an order with mandatory reason (admin only)"""
+    admin = await get_admin_user(request)
+    
+    if not cancellation.reason or len(cancellation.reason.strip()) < 5:
+        raise HTTPException(status_code=400, detail="Cancellation reason is required (minimum 5 characters)")
+    
+    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Refund credit if credit payment
+    if order.get("payment_method") == "credit":
+        await db.users.update_one(
+            {"user_id": order["user_id"]},
+            {"$inc": {"credit_balance": order["total_amount"]}}
+        )
+    
+    # Restore stock
+    for item in order.get("items", []):
+        await db.products.update_one(
+            {"name": item["product_name"]},
+            {"$inc": {"stock": item["quantity"]}}
+        )
+    
+    await db.orders.update_one(
+        {"order_id": order_id},
+        {"$set": {
+            "status": "cancelled",
+            "verification_status": "rejected",
+            "cancellation_reason": cancellation.reason,
+            "cancelled_by": admin.get("name", admin.get("email")),
+            "cancelled_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Notify customer
+    user = await db.users.find_one({"user_id": order["user_id"]}, {"_id": 0})
+    if user:
+        # Create notification
+        await db.notifications.insert_one({
+            "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            "user_id": order["user_id"],
+            "title": "Order Cancelled",
+            "message": f"Your order #{order_id} has been cancelled. Reason: {cancellation.reason}",
+            "notification_type": "order",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    
+    return {"message": "Order cancelled", "reason": cancellation.reason}
+
 @api_router.post("/admin/orders/{order_id}/reject")
 async def reject_order(order_id: str, request: Request):
-    """Reject an order (admin only)"""
+    """Reject an order (admin only) - deprecated, use cancel instead"""
     await get_admin_user(request)
     
     order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
@@ -811,51 +942,66 @@ async def reject_order(order_id: str, request: Request):
     return {"message": "Order rejected and refunded"}
 
 @api_router.get("/admin/reconciliation")
-async def get_reconciliation(request: Request):
+async def get_reconciliation(request: Request, search: Optional[str] = None):
     """Get users with outstanding credit balances (admin only)"""
     await get_admin_user(request)
     
-    # Get all users with credit balance used (less than 10000)
-    users = await db.users.find(
-        {"credit_balance": {"$lt": 10000}},
-        {"_id": 0}
-    ).to_list(1000)
+    # Get all users with credit balance used (less than monthly limit)
+    query = {"credit_balance": {"$lt": MONTHLY_CREDIT_LIMIT}}
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}}
+        ]
+    
+    users = await db.users.find(query, {"_id": 0}).to_list(1000)
     
     result = []
     for user in users:
-        outstanding = 10000 - user.get("credit_balance", 10000)
+        outstanding = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
         if outstanding > 0:
+            # Get detailed order history
             orders = await db.orders.find(
-                {"user_id": user["user_id"], "payment_method": "credit"},
+                {"user_id": user["user_id"], "payment_method": "credit", "status": {"$ne": "cancelled"}},
                 {"_id": 0}
             ).sort("created_at", -1).to_list(100)
+            
+            # Calculate totals
+            total_pending = sum(o.get("total_amount", 0) for o in orders if o.get("status") == "pending")
+            total_fulfilled = sum(o.get("total_amount", 0) for o in orders if o.get("status") == "fulfilled")
             
             result.append({
                 "user": user,
                 "outstanding_balance": outstanding,
-                "orders": orders
+                "total_pending": total_pending,
+                "total_owed": outstanding,
+                "orders": orders,
+                "order_count": len(orders)
             })
     
     return result
 
 @api_router.get("/admin/defaulters")
-async def get_defaulters(request: Request):
-    """Get monthly defaulters with VAT penalties (admin only)"""
+async def get_defaulters(request: Request, search: Optional[str] = None):
+    """Get monthly defaulters (admin only) - No VAT penalty"""
     await get_admin_user(request)
     
     # Get users with outstanding balance
-    users = await db.users.find(
-        {"credit_balance": {"$lt": 10000}},
-        {"_id": 0}
-    ).to_list(1000)
+    query = {"credit_balance": {"$lt": MONTHLY_CREDIT_LIMIT}}
+    if search:
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}}
+        ]
+    
+    users = await db.users.find(query, {"_id": 0}).to_list(1000)
     
     result = []
     for user in users:
-        outstanding = 10000 - user.get("credit_balance", 10000)
+        outstanding = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
         if outstanding > 0:
-            vat_penalty = outstanding * 0.16
-            total_due = outstanding + vat_penalty
-            
             orders = await db.orders.find(
                 {"user_id": user["user_id"], "payment_method": "credit", "status": {"$ne": "cancelled"}},
                 {"_id": 0}
@@ -863,9 +1009,8 @@ async def get_defaulters(request: Request):
             
             result.append({
                 "user": user,
-                "original_balance": outstanding,
-                "vat_penalty": vat_penalty,
-                "total_due": total_due,
+                "outstanding_balance": outstanding,
+                "total_due": outstanding,  # No VAT penalty - matches invoice format
                 "orders": orders
             })
     
@@ -1133,6 +1278,231 @@ async def get_user_credit_history(user_id: str, request: Request, start_date: Op
         "total_orders": len(orders),
         "total_amount": sum(o.get("total_amount", 0) for o in orders)
     }
+
+# ===== AUTO INVOICE GENERATION =====
+
+@api_router.post("/admin/auto-generate-invoice/{user_id}")
+async def auto_generate_invoice(user_id: str, request: Request):
+    """Automatically generate credit invoice from order history (admin only)"""
+    admin = await get_admin_user(request)
+    
+    body = await request.json()
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    
+    if not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Start and end dates are required")
+    
+    # Get user
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get credit orders in date range
+    orders = await db.orders.find({
+        "user_id": user_id,
+        "payment_method": "credit",
+        "status": {"$ne": "cancelled"},
+        "created_at": {"$gte": start_date, "$lte": end_date}
+    }, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    
+    if not orders:
+        raise HTTPException(status_code=404, detail="No credit orders found in the specified date range")
+    
+    # Build line items from orders
+    line_items = []
+    for order in orders:
+        for item in order.get("items", []):
+            flavor = item.get("product_name", "").replace("Happy Hour Jaba - ", "")
+            line_items.append({
+                "flavor": flavor,
+                "quantity": item.get("quantity", 0),
+                "unit_price": item.get("price", UNIT_PRICE),
+                "line_total": item.get("quantity", 0) * item.get("price", UNIT_PRICE),
+                "status": "unpaid",
+                "order_id": order.get("order_id"),
+                "order_date": order.get("created_at")
+            })
+    
+    # Generate invoice ID
+    date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = await db.credit_invoices.count_documents({
+        "created_at": {"$gte": today_start.isoformat()}
+    })
+    invoice_id = f"HHJ-INV-{date_str}-{str(today_count + 1).zfill(3)}"
+    
+    # Calculate total
+    total_amount = sum(item["line_total"] for item in line_items)
+    
+    # Create invoice
+    invoice_doc = {
+        "invoice_id": invoice_id,
+        "user_id": user_id,
+        "customer_name": user.get("name", ""),
+        "customer_email": user.get("email", ""),
+        "customer_phone": user.get("phone", ""),
+        "billing_period_start": start_date,
+        "billing_period_end": end_date,
+        "line_items": line_items,
+        "subtotal": total_amount,
+        "total_amount": total_amount,
+        "status": "unpaid",
+        "notes": f"Auto-generated from {len(orders)} orders",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin.get("name", admin.get("email", "Admin")),
+        "company_email": "contact@myhappyhour.co.ke",
+        "company_location": "Nairobi",
+        "payment_method": "Airtel Money",
+        "payment_number": "0733878020",
+        "auto_generated": True
+    }
+    
+    await db.credit_invoices.insert_one(invoice_doc)
+    
+    return await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+
+# ===== FEEDBACK & NOTIFICATIONS =====
+
+@api_router.post("/feedback")
+async def submit_feedback(feedback: FeedbackCreate, request: Request):
+    """Submit feedback to admin"""
+    user = await get_current_user(request)
+    
+    feedback_doc = {
+        "feedback_id": f"FB-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": user["user_id"],
+        "user_name": user.get("name", ""),
+        "user_email": user.get("email", ""),
+        "subject": feedback.subject or "General Feedback",
+        "message": feedback.message,
+        "status": "new",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.feedback.insert_one(feedback_doc)
+    
+    return {"message": "Feedback submitted successfully", "feedback_id": feedback_doc["feedback_id"]}
+
+@api_router.get("/admin/feedback")
+async def get_all_feedback(request: Request):
+    """Get all feedback (admin only)"""
+    await get_admin_user(request)
+    feedback = await db.feedback.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return feedback
+
+@api_router.post("/admin/notifications")
+async def create_notification(notification: NotificationCreate, request: Request):
+    """Create notification/push offer (admin only)"""
+    admin = await get_admin_user(request)
+    
+    notification_id = f"NOTIF-{uuid.uuid4().hex[:8].upper()}"
+    
+    if notification.target_users:
+        # Send to specific users
+        for user_id in notification.target_users:
+            await db.notifications.insert_one({
+                "notification_id": notification_id,
+                "user_id": user_id,
+                "title": notification.title,
+                "message": notification.message,
+                "notification_type": notification.notification_type,
+                "read": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": admin.get("name", admin.get("email"))
+            })
+    else:
+        # Broadcast to all users
+        users = await db.users.find({"role": "user"}, {"user_id": 1, "_id": 0}).to_list(10000)
+        for user in users:
+            await db.notifications.insert_one({
+                "notification_id": notification_id,
+                "user_id": user["user_id"],
+                "title": notification.title,
+                "message": notification.message,
+                "notification_type": notification.notification_type,
+                "read": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": admin.get("name", admin.get("email"))
+            })
+    
+    return {"message": "Notification created", "notification_id": notification_id}
+
+@api_router.get("/notifications")
+async def get_user_notifications(request: Request):
+    """Get user's notifications"""
+    user = await get_current_user(request)
+    notifications = await db.notifications.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    return notifications
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, request: Request):
+    """Mark notification as read"""
+    user = await get_current_user(request)
+    await db.notifications.update_many(
+        {"notification_id": notification_id, "user_id": user["user_id"]},
+        {"$set": {"read": True}}
+    )
+    return {"message": "Notification marked as read"}
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_count(request: Request):
+    """Get count of unread notifications"""
+    user = await get_current_user(request)
+    count = await db.notifications.count_documents({
+        "user_id": user["user_id"],
+        "read": False
+    })
+    return {"unread_count": count}
+
+# ===== USER DASHBOARD STATS =====
+
+@api_router.get("/users/dashboard-stats")
+async def get_user_dashboard_stats(request: Request):
+    """Get user dashboard statistics"""
+    user = await get_current_user(request)
+    
+    # Get credit orders
+    credit_orders = await db.orders.find({
+        "user_id": user["user_id"],
+        "payment_method": "credit",
+        "status": {"$ne": "cancelled"}
+    }, {"_id": 0}).to_list(1000)
+    
+    # Get invoices for this user
+    invoices = await db.credit_invoices.find({
+        "user_id": user["user_id"]
+    }, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    # Calculate stats
+    total_pending = sum(o.get("total_amount", 0) for o in credit_orders if o.get("status") == "pending")
+    total_owed = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
+    paid_invoices = [inv for inv in invoices if inv.get("status") == "paid"]
+    unpaid_invoices = [inv for inv in invoices if inv.get("status") != "paid"]
+    
+    return {
+        "credit_balance": user.get("credit_balance", MONTHLY_CREDIT_LIMIT),
+        "monthly_limit": MONTHLY_CREDIT_LIMIT,
+        "total_pending": total_pending,
+        "total_owed": total_owed if total_owed > 0 else 0,
+        "total_orders": len(credit_orders),
+        "paid_invoices_count": len(paid_invoices),
+        "unpaid_invoices_count": len(unpaid_invoices),
+        "invoices": invoices[:5]  # Last 5 invoices
+    }
+
+@api_router.get("/users/invoices")
+async def get_user_invoices(request: Request):
+    """Get invoices for current user"""
+    user = await get_current_user(request)
+    invoices = await db.credit_invoices.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    return invoices
 
 # ===== ROOT ROUTE =====
 

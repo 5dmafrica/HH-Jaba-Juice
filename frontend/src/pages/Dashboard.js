@@ -7,11 +7,15 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../components/ui/dialog';
-import { Beer, Plus, Minus, CreditCard, Smartphone, ShoppingCart, History, Settings, LogOut, AlertTriangle, User } from 'lucide-react';
+import { Textarea } from '../components/ui/textarea';
+import { Beer, Plus, Minus, CreditCard, Smartphone, ShoppingCart, History, Settings, LogOut, AlertTriangle, User, Bell, MessageSquare, FileText } from 'lucide-react';
 import { toast } from 'sonner';
+import { Badge } from '../components/ui/badge';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const DAILY_LIMIT = 10;
+const MONTHLY_CREDIT_LIMIT = 30000;
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -22,14 +26,21 @@ const Dashboard = () => {
   const [products, setProducts] = useState([]);
   const [quantities, setQuantities] = useState({});
   const [showOrderDialog, setShowOrderDialog] = useState(false);
+  const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('credit');
   const [mpesaCode, setMpesaCode] = useState('');
   const [loading, setLoading] = useState(false);
-  const [creditBalance, setCreditBalance] = useState(currentUser?.credit_balance || 10000);
+  const [creditBalance, setCreditBalance] = useState(currentUser?.credit_balance || MONTHLY_CREDIT_LIMIT);
+  const [dashboardStats, setDashboardStats] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackSubject, setFeedbackSubject] = useState('');
 
   useEffect(() => {
     fetchProducts();
-    fetchCreditBalance();
+    fetchDashboardStats();
+    fetchNotifications();
   }, []);
 
   const fetchProducts = async () => {
@@ -45,6 +56,48 @@ const Dashboard = () => {
     }
   };
 
+  const fetchDashboardStats = async () => {
+    try {
+      const response = await axios.get(`${API}/users/dashboard-stats`, { withCredentials: true });
+      setDashboardStats(response.data);
+      setCreditBalance(response.data.credit_balance);
+    } catch (error) {
+      console.error('Failed to fetch dashboard stats');
+    }
+  };
+
+  const fetchNotifications = async () => {
+    try {
+      const [notifResponse, countResponse] = await Promise.all([
+        axios.get(`${API}/notifications`, { withCredentials: true }),
+        axios.get(`${API}/notifications/unread-count`, { withCredentials: true })
+      ]);
+      setNotifications(notifResponse.data);
+      setUnreadCount(countResponse.data.unread_count);
+    } catch (error) {
+      console.error('Failed to fetch notifications');
+    }
+  };
+
+  const submitFeedback = async () => {
+    if (!feedbackMessage.trim()) {
+      toast.error('Please enter a message');
+      return;
+    }
+    try {
+      await axios.post(`${API}/feedback`, {
+        subject: feedbackSubject || 'General Feedback',
+        message: feedbackMessage
+      }, { withCredentials: true });
+      toast.success('Feedback submitted successfully');
+      setShowFeedbackDialog(false);
+      setFeedbackMessage('');
+      setFeedbackSubject('');
+    } catch (error) {
+      toast.error('Failed to submit feedback');
+    }
+  };
+
   const fetchCreditBalance = async () => {
     try {
       const response = await axios.get(`${API}/users/credit-balance`, { withCredentials: true });
@@ -56,14 +109,14 @@ const Dashboard = () => {
 
   const updateQuantity = (productId, delta) => {
     setQuantities(prev => {
-      const newQty = Math.max(0, Math.min(5, (prev[productId] || 0) + delta));
+      const newQty = Math.max(0, Math.min(DAILY_LIMIT, (prev[productId] || 0) + delta));
       const totalQty = Object.entries(prev).reduce((sum, [id, qty]) => {
         if (id === productId) return sum + newQty;
         return sum + qty;
       }, 0);
       
-      if (totalQty > 5) {
-        toast.error('Maximum 5 bottles per order');
+      if (totalQty > DAILY_LIMIT) {
+        toast.error(`Maximum ${DAILY_LIMIT} bottles per order`);
         return prev;
       }
       
@@ -132,8 +185,10 @@ const Dashboard = () => {
     }
   };
 
-  const usedCredit = 10000 - creditBalance;
-  const showWarning = usedCredit > 5000;
+  const usedCredit = MONTHLY_CREDIT_LIMIT - creditBalance;
+  const showWarning = usedCredit > 15000;
+  const totalOwed = dashboardStats?.total_owed || 0;
+  const totalPending = dashboardStats?.total_pending || 0;
 
   if (!currentUser) {
     return null;
@@ -148,11 +203,29 @@ const Dashboard = () => {
             <div className="w-10 h-10 bg-black rounded-lg flex items-center justify-center">
               <Beer className="w-6 h-6 text-hh-green" />
             </div>
-            <h1 className="font-display text-xl font-bold uppercase tracking-tight text-black">
-              HH Jaba
-            </h1>
+            <div>
+              <h1 className="font-display text-xl font-bold uppercase tracking-tight text-black">
+                HH Jaba
+              </h1>
+              <p className="text-xs text-black/70">Nairobi</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* Notifications Bell */}
+            <Button
+              data-testid="notifications-btn"
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/notifications')}
+              className="border-2 border-black font-display uppercase text-xs relative"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center">
+                  {unreadCount}
+                </span>
+              )}
+            </Button>
             {isAdmin && (
               <Button
                 data-testid="admin-btn"
@@ -200,10 +273,30 @@ const Dashboard = () => {
             <p className="font-display text-3xl font-bold text-black">
               KES {creditBalance.toLocaleString('en-KE', { minimumFractionDigits: 2 })}
             </p>
+            <p className="text-xs text-gray-500 mt-1">of KES {MONTHLY_CREDIT_LIMIT.toLocaleString()} monthly limit</p>
+            
+            {/* Pending & Owed Stats */}
+            {(totalPending > 0 || totalOwed > 0) && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {totalPending > 0 && (
+                  <div className="p-2 bg-yellow-100 rounded border border-yellow-300">
+                    <p className="text-xs text-yellow-700">Pending</p>
+                    <p className="font-display font-bold text-yellow-800">KES {totalPending.toLocaleString()}</p>
+                  </div>
+                )}
+                {totalOwed > 0 && (
+                  <div className="p-2 bg-red-100 rounded border border-red-300">
+                    <p className="text-xs text-red-700">Total Owed</p>
+                    <p className="font-display font-bold text-red-800">KES {totalOwed.toLocaleString()}</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
             {showWarning && (
               <div className="mt-3 flex items-start gap-2 text-orange-700 text-sm">
                 <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <p>Please clear balance by the 5th of next month to avoid 16% VAT penalty</p>
+                <p>Please clear balance before new cycle begins (No Carry-Forward)</p>
               </div>
             )}
           </div>
@@ -219,6 +312,23 @@ const Dashboard = () => {
               <History className="w-4 h-4 mr-2" />
               Orders
             </Button>
+            <Button
+              data-testid="invoices-btn"
+              variant="outline"
+              onClick={() => navigate('/invoices')}
+              className="flex-1 h-12 border-2 border-black font-display uppercase text-sm shadow-brutal-sm btn-brutal"
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              Invoices
+            </Button>
+            <Button
+              data-testid="feedback-btn"
+              variant="outline"
+              onClick={() => setShowFeedbackDialog(true)}
+              className="h-12 border-2 border-black font-display uppercase text-sm shadow-brutal-sm btn-brutal"
+            >
+              <MessageSquare className="w-4 h-4" />
+            </Button>
           </div>
 
           {/* Flavors Section */}
@@ -226,7 +336,7 @@ const Dashboard = () => {
             <h2 className="font-display text-xl uppercase tracking-tight mb-4">
               Choose Your Flavors
             </h2>
-            <p className="text-sm text-gray-600 mb-4">KES 500 per bottle • Max 5 per order</p>
+            <p className="text-sm text-gray-600 mb-4">KES 500 per bottle • Max {DAILY_LIMIT} per order</p>
 
             <div className="grid grid-cols-2 gap-3">
               {products.map((product) => (
@@ -404,6 +514,53 @@ const Dashboard = () => {
               className="w-full h-14 bg-hh-green text-black hover:bg-green-600 text-lg font-display uppercase tracking-wide border-2 border-black shadow-brutal btn-brutal disabled:opacity-50"
             >
               {loading ? 'Processing...' : 'Confirm Order'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Feedback Dialog */}
+      <Dialog open={showFeedbackDialog} onOpenChange={setShowFeedbackDialog}>
+        <DialogContent className="max-w-md border-2 border-black shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase">Share Feedback</DialogTitle>
+            <DialogDescription>Send a message directly to the admin team</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="feedback-subject" className="font-display uppercase text-sm">
+                Subject (Optional)
+              </Label>
+              <Input
+                id="feedback-subject"
+                placeholder="e.g., Suggestion, Issue, Compliment"
+                value={feedbackSubject}
+                onChange={(e) => setFeedbackSubject(e.target.value)}
+                className="mt-1 h-12 border-2 border-black"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="feedback-message" className="font-display uppercase text-sm">
+                Message *
+              </Label>
+              <Textarea
+                id="feedback-message"
+                placeholder="Share your thoughts, suggestions, or report an issue..."
+                value={feedbackMessage}
+                onChange={(e) => setFeedbackMessage(e.target.value)}
+                className="mt-1 border-2 border-black min-h-[120px]"
+              />
+            </div>
+
+            <Button
+              data-testid="submit-feedback-btn"
+              onClick={submitFeedback}
+              className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
+            >
+              <MessageSquare className="w-4 h-4 mr-2" />
+              Send Feedback
             </Button>
           </div>
         </DialogContent>

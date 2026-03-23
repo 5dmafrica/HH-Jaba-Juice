@@ -30,9 +30,9 @@ const Landing = () => {
           {/* Hero Image */}
           <div className="relative mb-8">
             <img
-              src="https://images.unsplash.com/photo-1558642452-9d2a7deb7f62?auto=format&fit=crop&w=800&q=80"
-              alt="Happy Hour Jaba"
-              className="w-full h-64 object-cover border-2 border-black shadow-brutal rounded-lg"
+              src="https://customer-assets.emergentagent.com/job_jaba-admin-hub/artifacts/f9epea1o_5%20tastes.jpg"
+              alt="Happy Hour Jaba - All Flavors"
+              className="w-full h-72 object-cover border-2 border-black shadow-brutal rounded-lg"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent rounded-lg flex items-end p-4">
               <p className="text-white font-display text-xl uppercase">
@@ -60,23 +60,31 @@ const Landing = () => {
             </p>
           </div>
 
-          {/* Features */}
-          <div className="grid grid-cols-2 gap-3 mb-8">
-            <div className="bg-flavor-tamarind/10 border-2 border-flavor-tamarind p-3 rounded-lg text-center">
+          {/* Features - All 6 Flavors */}
+          <div className="grid grid-cols-3 gap-2 mb-8">
+            <div className="bg-flavor-tamarind/10 border-2 border-flavor-tamarind p-2 rounded-lg text-center">
               <div className="w-3 h-3 bg-flavor-tamarind rounded-full mx-auto mb-1"></div>
               <span className="text-xs font-display uppercase">Tamarind</span>
             </div>
-            <div className="bg-flavor-watermelon/10 border-2 border-flavor-watermelon p-3 rounded-lg text-center">
+            <div className="bg-flavor-watermelon/10 border-2 border-flavor-watermelon p-2 rounded-lg text-center">
               <div className="w-3 h-3 bg-flavor-watermelon rounded-full mx-auto mb-1"></div>
               <span className="text-xs font-display uppercase">Watermelon</span>
             </div>
-            <div className="bg-flavor-beetroot/10 border-2 border-flavor-beetroot p-3 rounded-lg text-center">
+            <div className="bg-flavor-beetroot/10 border-2 border-flavor-beetroot p-2 rounded-lg text-center">
               <div className="w-3 h-3 bg-flavor-beetroot rounded-full mx-auto mb-1"></div>
               <span className="text-xs font-display uppercase">Beetroot</span>
             </div>
-            <div className="bg-flavor-pineapple/10 border-2 border-flavor-pineapple p-3 rounded-lg text-center">
+            <div className="bg-flavor-pineapple/10 border-2 border-flavor-pineapple p-2 rounded-lg text-center">
               <div className="w-3 h-3 bg-flavor-pineapple rounded-full mx-auto mb-1"></div>
               <span className="text-xs font-display uppercase">Pineapple</span>
+            </div>
+            <div className="bg-flavor-hibiscus/10 border-2 border-flavor-hibiscus p-2 rounded-lg text-center">
+              <div className="w-3 h-3 bg-flavor-hibiscus rounded-full mx-auto mb-1"></div>
+              <span className="text-xs font-display uppercase">Hibiscus</span>
+            </div>
+            <div className="bg-purple-500/10 border-2 border-purple-500 p-2 rounded-lg text-center">
+              <div className="w-3 h-3 bg-purple-500 rounded-full mx-auto mb-1"></div>
+              <span className="text-xs font-display uppercase">Mixed Fruit</span>
             </div>
           </div>
 
