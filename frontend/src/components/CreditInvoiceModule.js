@@ -171,8 +171,10 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
   };
 
   const shareViaWhatsApp = (invoice) => {
-    const text = `*HH Jaba Invoice: ${invoice.invoice_id}*%0A%0ACustomer: ${invoice.customer_name}%0APeriod: ${format(new Date(invoice.billing_period_start), 'MMM dd')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}%0ATotal: KES ${invoice.total_amount.toLocaleString()}%0AStatus: ${invoice.status.toUpperCase()}%0A%0APayment: Airtel Money - 0733878020%0A%0AHappy Hour Jaba - 5DM Africa`;
-    window.open(`https://wa.me/?text=${text}`, '_blank');
+    const phone = (invoice.customer_phone || '').replace(/\+/g, '').replace(/\s/g, '');
+    const text = `Invoice #${invoice.invoice_id}: KES ${invoice.total_amount.toLocaleString()} due. Please pay to Airtel Money 0733878020. Period: ${format(new Date(invoice.billing_period_start), 'MMM dd')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}. Status: ${invoice.status.toUpperCase()}. - Happy Hour Jaba, 5DM Africa`;
+    const encoded = encodeURIComponent(text);
+    window.open(`https://wa.me/${phone}?text=${encoded}`, '_blank');
   };
 
   const shareViaEmail = (invoice) => {

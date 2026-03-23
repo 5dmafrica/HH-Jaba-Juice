@@ -399,7 +399,7 @@ const Dashboard = () => {
                         variant="outline"
                         size="sm"
                         onClick={() => updateQuantity(product.product_id, 1)}
-                        disabled={product.stock === 0 || totalQuantity >= 5}
+                        disabled={product.stock === 0 || totalQuantity >= DAILY_LIMIT}
                         className="w-8 h-8 p-0 border-2 border-black"
                       >
                         <Plus className="w-3 h-3" />

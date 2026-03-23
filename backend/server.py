@@ -150,6 +150,29 @@ class NotificationCreate(BaseModel):
     notification_type: str = "general"  # 'offer', 'invoice', 'general'
     target_users: Optional[List[str]] = None  # None means all users
 
+# POP (Proof of Payment) Submission Model
+class POPSubmission(BaseModel):
+    invoice_id: str
+    transaction_code: str
+    amount_paid: float
+    payment_method: str = "airtel_money"  # airtel_money, mpesa, bank_transfer
+    payment_type: str = "full"  # 'full' or 'partial'
+    notes: Optional[str] = None
+
+# Payment Verification Model
+class PaymentVerification(BaseModel):
+    status: str  # 'approved' or 'rejected'
+    verified_amount: Optional[float] = None
+    reason: Optional[str] = None
+
+# Backlog Credit Entry Model
+class BacklogCreditEntry(BaseModel):
+    user_id: str
+    amount: float
+    description: str
+    billing_period_start: Optional[str] = None
+    billing_period_end: Optional[str] = None
+
 # Credit Purchase Invoice Models
 class CreditInvoiceLineItem(BaseModel):
     flavor: str  # Tamarind, Watermelon, Beetroot, Pineapple, Hibiscus, Mixed Fruit
@@ -726,8 +749,8 @@ async def create_order(order_data: OrderCreate, request: Request):
         "total_amount": total_amount,
         "payment_method": order_data.payment_method,
         "mpesa_code": order_data.mpesa_code if order_data.payment_method == "mpesa" else None,
-        "status": "fulfilled" if order_data.payment_method == "credit" else "pending",
-        "verification_status": "verified" if order_data.payment_method == "credit" else "pending",
+        "status": "pending",
+        "verification_status": "pending",
         "receipt_url": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat()
@@ -823,18 +846,10 @@ async def get_order(order_id: str, request: Request):
 
 @api_router.get("/admin/pending-orders")
 async def get_pending_orders(request: Request, payment_method: Optional[str] = None):
-    """Get all pending and recent orders (admin only)"""
+    """Get all pending orders (admin only)"""
     await get_admin_user(request)
     
-    # Show pending orders + recently fulfilled/created orders (last 2 hours)
-    two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-    
-    query = {
-        "$or": [
-            {"status": "pending"},
-            {"status": "fulfilled", "created_at": {"$gte": two_hours_ago}}
-        ]
-    }
+    query = {"status": "pending"}
     if payment_method and payment_method != "all":
         query["payment_method"] = payment_method
     
@@ -1641,10 +1656,9 @@ async def get_user_dashboard_stats(request: Request):
     """Get user dashboard statistics"""
     user = await get_current_user(request)
     
-    # Get credit orders
-    credit_orders = await db.orders.find({
+    # Get all non-cancelled orders
+    all_orders = await db.orders.find({
         "user_id": user["user_id"],
-        "payment_method": "credit",
         "status": {"$ne": "cancelled"}
     }, {"_id": 0}).to_list(1000)
     
@@ -1653,21 +1667,31 @@ async def get_user_dashboard_stats(request: Request):
         "user_id": user["user_id"]
     }, {"_id": 0}).sort("created_at", -1).to_list(100)
     
+    # Get payment submissions
+    payments = await db.payment_submissions.find({
+        "user_id": user["user_id"]
+    }, {"_id": 0}).sort("submitted_at", -1).to_list(100)
+    
     # Calculate stats
-    total_pending = sum(o.get("total_amount", 0) for o in credit_orders if o.get("status") == "pending")
+    total_pending = sum(o.get("total_amount", 0) for o in all_orders if o.get("status") == "pending")
     total_owed = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
+    total_approved_payments = sum(p.get("verified_amount", 0) for p in payments if p.get("status") == "approved")
+    pending_pop_count = sum(1 for p in payments if p.get("status") == "pending")
     paid_invoices = [inv for inv in invoices if inv.get("status") == "paid"]
-    unpaid_invoices = [inv for inv in invoices if inv.get("status") != "paid"]
+    unpaid_invoices = [inv for inv in invoices if inv.get("status") not in ["paid"]]
     
     return {
         "credit_balance": user.get("credit_balance", MONTHLY_CREDIT_LIMIT),
         "monthly_limit": MONTHLY_CREDIT_LIMIT,
         "total_pending": total_pending,
         "total_owed": total_owed if total_owed > 0 else 0,
-        "total_orders": len(credit_orders),
+        "total_orders": len(all_orders),
+        "total_approved_payments": total_approved_payments,
+        "pending_pop_count": pending_pop_count,
         "paid_invoices_count": len(paid_invoices),
         "unpaid_invoices_count": len(unpaid_invoices),
-        "invoices": invoices[:5]  # Last 5 invoices
+        "invoices": invoices[:5],
+        "recent_payments": payments[:5]
     }
 
 @api_router.get("/users/invoices")
@@ -1679,6 +1703,263 @@ async def get_user_invoices(request: Request):
         {"_id": 0}
     ).sort("created_at", -1).to_list(100)
     return invoices
+
+# ===== POP (PROOF OF PAYMENT) ROUTES =====
+
+@api_router.post("/payments/submit-pop")
+async def submit_pop(pop_data: POPSubmission, request: Request):
+    """Customer submits proof of payment against an invoice"""
+    user = await get_current_user(request)
+    
+    # Verify the invoice exists and belongs to the user
+    invoice = await db.credit_invoices.find_one(
+        {"invoice_id": pop_data.invoice_id, "user_id": user["user_id"]},
+        {"_id": 0}
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found or does not belong to you")
+    
+    pop_id = f"POP-{uuid.uuid4().hex[:8].upper()}"
+    
+    pop_doc = {
+        "pop_id": pop_id,
+        "invoice_id": pop_data.invoice_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name", ""),
+        "user_email": user.get("email", ""),
+        "transaction_code": pop_data.transaction_code,
+        "amount_paid": pop_data.amount_paid,
+        "payment_method": pop_data.payment_method,
+        "payment_type": pop_data.payment_type,
+        "notes": pop_data.notes,
+        "status": "pending",
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "verified_at": None,
+        "verified_by": None,
+        "rejection_reason": None
+    }
+    
+    await db.payment_submissions.insert_one(pop_doc)
+    
+    # Notify admins
+    admins = await db.users.find({"role": "admin"}, {"_id": 0}).to_list(100)
+    for admin in admins:
+        await db.notifications.insert_one({
+            "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            "user_id": admin["user_id"],
+            "title": "Payment Proof Submitted",
+            "message": f"{user.get('name')} submitted POP for Invoice {pop_data.invoice_id}: KES {pop_data.amount_paid:,.0f} ({pop_data.payment_type})",
+            "notification_type": "payment",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    
+    return {"pop_id": pop_id, "message": "Payment proof submitted for verification"}
+
+@api_router.get("/payments/my-submissions")
+async def get_my_pop_submissions(request: Request):
+    """Get current user's POP submissions"""
+    user = await get_current_user(request)
+    submissions = await db.payment_submissions.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("submitted_at", -1).to_list(100)
+    return submissions
+
+@api_router.get("/admin/payments/pending")
+async def get_pending_payments(request: Request):
+    """Get all pending payment submissions (admin only)"""
+    await get_admin_user(request)
+    submissions = await db.payment_submissions.find(
+        {"status": "pending"},
+        {"_id": 0}
+    ).sort("submitted_at", -1).to_list(1000)
+    return submissions
+
+@api_router.get("/admin/payments/all")
+async def get_all_payments(request: Request):
+    """Get all payment submissions (admin only)"""
+    await get_admin_user(request)
+    submissions = await db.payment_submissions.find(
+        {},
+        {"_id": 0}
+    ).sort("submitted_at", -1).to_list(1000)
+    return submissions
+
+@api_router.post("/admin/payments/{pop_id}/verify")
+async def verify_payment(pop_id: str, verification: PaymentVerification, request: Request):
+    """Admin verifies or rejects a payment submission"""
+    admin = await get_admin_user(request)
+    
+    pop = await db.payment_submissions.find_one({"pop_id": pop_id}, {"_id": 0})
+    if not pop:
+        raise HTTPException(status_code=404, detail="Payment submission not found")
+    
+    if pop["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Payment already processed")
+    
+    verified_amount = verification.verified_amount or pop["amount_paid"]
+    
+    update_data = {
+        "status": verification.status,
+        "verified_amount": verified_amount,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "verified_by": admin.get("name", admin.get("email")),
+        "rejection_reason": verification.reason if verification.status == "rejected" else None
+    }
+    
+    await db.payment_submissions.update_one({"pop_id": pop_id}, {"$set": update_data})
+    
+    # If approved, update invoice status and credit balance
+    if verification.status == "approved":
+        invoice = await db.credit_invoices.find_one({"invoice_id": pop["invoice_id"]}, {"_id": 0})
+        if invoice:
+            # Calculate total approved payments for this invoice
+            approved = await db.payment_submissions.find(
+                {"invoice_id": pop["invoice_id"], "status": "approved"},
+                {"_id": 0}
+            ).to_list(100)
+            total_paid = sum(p.get("verified_amount", 0) for p in approved) + verified_amount
+            
+            new_status = "paid" if total_paid >= invoice.get("total_amount", 0) else "partial"
+            await db.credit_invoices.update_one(
+                {"invoice_id": pop["invoice_id"]},
+                {"$set": {"status": new_status, "total_paid": total_paid}}
+            )
+        
+        # Restore credit balance proportional to payment
+        await db.users.update_one(
+            {"user_id": pop["user_id"]},
+            {"$inc": {"credit_balance": verified_amount}}
+        )
+        
+        # Calculate remaining balance
+        user = await db.users.find_one({"user_id": pop["user_id"]}, {"_id": 0})
+        remaining = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", 0) if user else 0
+        
+        # Notify customer
+        await db.notifications.insert_one({
+            "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            "user_id": pop["user_id"],
+            "title": "Payment Approved",
+            "message": f"Payment of KES {verified_amount:,.0f} for Invoice {pop['invoice_id']} has been approved. Updated balance owed: KES {max(0, remaining):,.0f}",
+            "notification_type": "payment",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    else:
+        # Notify customer of rejection
+        await db.notifications.insert_one({
+            "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            "user_id": pop["user_id"],
+            "title": "Payment Rejected",
+            "message": f"Payment for Invoice {pop['invoice_id']} was rejected. Reason: {verification.reason or 'Not specified'}. Please resubmit with correct details.",
+            "notification_type": "payment",
+            "read": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    
+    return {"message": f"Payment {verification.status}", "pop_id": pop_id}
+
+# ===== BACKLOG CREDIT ENTRY =====
+
+@api_router.post("/admin/backlog-credit")
+async def create_backlog_credit(entry: BacklogCreditEntry, request: Request):
+    """Admin creates a manual backlog credit entry for a user"""
+    admin = await get_admin_user(request)
+    
+    user = await db.users.find_one({"user_id": entry.user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Deduct from credit balance (represents owed amount)
+    await db.users.update_one(
+        {"user_id": entry.user_id},
+        {"$inc": {"credit_balance": -entry.amount}}
+    )
+    
+    # Create invoice for the backlog
+    date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+    unique_suffix = uuid.uuid4().hex[:5].upper()
+    invoice_id = f"HHJ-INV-{date_str}-{unique_suffix}"
+    
+    invoice_doc = {
+        "invoice_id": invoice_id,
+        "user_id": entry.user_id,
+        "customer_name": user.get("name", ""),
+        "customer_email": user.get("email", ""),
+        "customer_phone": user.get("phone", ""),
+        "billing_period_start": entry.billing_period_start or datetime.now(timezone.utc).replace(day=1).strftime('%Y-%m-%d'),
+        "billing_period_end": entry.billing_period_end or datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+        "line_items": [{
+            "flavor": "Backlog Credit",
+            "quantity": 1,
+            "unit_price": entry.amount,
+            "line_total": entry.amount,
+            "status": "unpaid"
+        }],
+        "subtotal": entry.amount,
+        "total_amount": entry.amount,
+        "status": "unpaid",
+        "payment_type": "credit",
+        "notes": f"Backlog entry: {entry.description}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin.get("name", admin.get("email", "Admin")),
+        "company_email": "contact@myhappyhour.co.ke",
+        "payment_method": "Airtel Money",
+        "payment_number": "0733878020",
+        "is_backlog": True
+    }
+    
+    await db.credit_invoices.insert_one(invoice_doc)
+    
+    return {"invoice_id": invoice_id, "message": f"Backlog credit of KES {entry.amount:,.0f} added for {user.get('name')}"}
+
+# ===== DEFAULTER WARNING TEMPLATES =====
+
+@api_router.post("/admin/defaulter-warning/{user_id}")
+async def send_defaulter_warning(user_id: str, request: Request, template: str = "overdue"):
+    """Send a defaulter warning notification to a user"""
+    admin = await get_admin_user(request)
+    
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    outstanding = MONTHLY_CREDIT_LIMIT - user.get("credit_balance", MONTHLY_CREDIT_LIMIT)
+    
+    templates = {
+        "limit_reached": {
+            "title": "Credit Limit Reached (KES 30,000)",
+            "message": f"Hi {user.get('name')}, your credit limit of KES 30,000 has been reached. Outstanding balance: KES {outstanding:,.0f}. Please settle your balance to continue ordering. Pay to Airtel Money 0733878020."
+        },
+        "overdue": {
+            "title": "Overdue Payment Notice",
+            "message": f"Hi {user.get('name')}, you have an overdue balance of KES {outstanding:,.0f}. Per our No Carry-Forward policy, this must be cleared before the next billing cycle. Pay to Airtel Money 0733878020."
+        },
+        "suspended": {
+            "title": "Account Suspended",
+            "message": f"Hi {user.get('name')}, your account has been suspended due to unpaid balance of KES {outstanding:,.0f}. Please clear your balance immediately to restore ordering privileges. Pay to Airtel Money 0733878020."
+        }
+    }
+    
+    tmpl = templates.get(template, templates["overdue"])
+    
+    await db.notifications.insert_one({
+        "notification_id": f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        "user_id": user_id,
+        "title": tmpl["title"],
+        "message": tmpl["message"],
+        "notification_type": "warning",
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    # Also build WhatsApp link for the admin to use
+    wa_message = tmpl["message"].replace(" ", "%20")
+    wa_link = f"https://wa.me/{user.get('phone', '').replace('+', '').replace(' ', '')}?text={wa_message}"
+    
+    return {"message": f"Warning sent to {user.get('name')}", "whatsapp_link": wa_link}
 
 # ===== ROOT ROUTE =====
 

@@ -50,20 +50,6 @@ const AdminDashboard = () => {
   const [defaulters, setDefaulters] = useState([]);
   const [defaultersSearch, setDefaultersSearch] = useState('');
   
-  // Manual Invoice State
-  const [manualInvoices, setManualInvoices] = useState([]);
-  const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
-  const [invoiceForm, setInvoiceForm] = useState({
-    user_id: '',
-    customer_name: '',
-    amount: '',
-    description: '',
-    payment_method: 'credit',
-    mpesa_code: '',
-    product_name: '',
-    quantity: ''
-  });
-  
   // Feedback State
   const [feedback, setFeedback] = useState([]);
   
@@ -77,6 +63,18 @@ const AdminDashboard = () => {
   const [autoInvoiceUserId, setAutoInvoiceUserId] = useState('');
   const [autoInvoiceStartDate, setAutoInvoiceStartDate] = useState('');
   const [autoInvoiceEndDate, setAutoInvoiceEndDate] = useState('');
+
+  // Payment Verification State
+  const [pendingPayments, setPendingPayments] = useState([]);
+  const [verifyRejectReason, setVerifyRejectReason] = useState('');
+  const [verifyingPayment, setVerifyingPayment] = useState(null);
+  const [showRejectDialog, setShowRejectDialog] = useState(false);
+  
+  // Backlog Credit Entry State
+  const [showBacklogDialog, setShowBacklogDialog] = useState(false);
+  const [backlogUserId, setBacklogUserId] = useState('');
+  const [backlogAmount, setBacklogAmount] = useState('');
+  const [backlogDescription, setBacklogDescription] = useState('');
   
   // Share Reconciliation Report State
   const [showShareReportDialog, setShowShareReportDialog] = useState(false);
@@ -189,7 +187,7 @@ const AdminDashboard = () => {
         fetchProducts(),
         fetchReconciliation(),
         fetchDefaulters(),
-        fetchManualInvoices(),
+        fetchPendingPayments(),
         fetchUsers(),
         fetchFeedback()
       ]);
@@ -237,12 +235,12 @@ const AdminDashboard = () => {
     }
   };
 
-  const fetchManualInvoices = async () => {
+  const fetchPendingPayments = async () => {
     try {
-      const response = await axios.get(`${API}/admin/manual-invoices`, { withCredentials: true });
-      setManualInvoices(response.data);
+      const response = await axios.get(`${API}/admin/payments/pending`, { withCredentials: true });
+      setPendingPayments(response.data);
     } catch (error) {
-      console.error('Failed to fetch manual invoices');
+      console.error('Failed to fetch pending payments');
     }
   };
 
@@ -431,42 +429,73 @@ const AdminDashboard = () => {
   };
 
   // Manual Invoice Actions
-  const createManualInvoice = async () => {
+  // Payment Verification Actions
+  const approvePayment = async (popId) => {
     try {
-      await axios.post(`${API}/admin/manual-invoice`, {
-        ...invoiceForm,
-        amount: parseFloat(invoiceForm.amount) || 0,
-        quantity: parseInt(invoiceForm.quantity) || null
+      await axios.post(`${API}/admin/payments/${popId}/verify`, {
+        status: 'approved'
       }, { withCredentials: true });
-      toast.success('Invoice created');
-      setShowInvoiceDialog(false);
-      setInvoiceForm({
-        user_id: '', customer_name: '', amount: '', description: '',
-        payment_method: 'credit', mpesa_code: '', product_name: '', quantity: ''
-      });
-      fetchManualInvoices();
+      toast.success('Payment approved');
+      fetchPendingPayments();
+      fetchReconciliation();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create invoice');
+      toast.error(error.response?.data?.detail || 'Failed to approve payment');
     }
   };
 
-  const verifyInvoice = async (invoiceId) => {
+  const rejectPayment = async () => {
+    if (!verifyingPayment || !verifyRejectReason) {
+      toast.error('Please provide a rejection reason');
+      return;
+    }
     try {
-      await axios.post(`${API}/admin/manual-invoices/${invoiceId}/verify`, {}, { withCredentials: true });
-      toast.success('Invoice verified');
-      fetchManualInvoices();
+      await axios.post(`${API}/admin/payments/${verifyingPayment}/verify`, {
+        status: 'rejected',
+        reason: verifyRejectReason
+      }, { withCredentials: true });
+      toast.success('Payment rejected');
+      setShowRejectDialog(false);
+      setVerifyingPayment(null);
+      setVerifyRejectReason('');
+      fetchPendingPayments();
     } catch (error) {
-      toast.error('Failed to verify invoice');
+      toast.error(error.response?.data?.detail || 'Failed to reject payment');
     }
   };
 
-  const rejectInvoice = async (invoiceId) => {
+  const submitBacklogCredit = async () => {
+    if (!backlogUserId || !backlogAmount || !backlogDescription) {
+      toast.error('Please fill all fields');
+      return;
+    }
     try {
-      await axios.post(`${API}/admin/manual-invoices/${invoiceId}/reject`, {}, { withCredentials: true });
-      toast.success('Invoice rejected');
-      fetchManualInvoices();
+      await axios.post(`${API}/admin/backlog-credit`, {
+        user_id: backlogUserId,
+        amount: parseFloat(backlogAmount),
+        description: backlogDescription
+      }, { withCredentials: true });
+      toast.success('Backlog credit entry added');
+      setShowBacklogDialog(false);
+      setBacklogUserId('');
+      setBacklogAmount('');
+      setBacklogDescription('');
+      fetchReconciliation();
+      fetchDefaulters();
     } catch (error) {
-      toast.error('Failed to reject invoice');
+      toast.error(error.response?.data?.detail || 'Failed to add backlog credit');
+    }
+  };
+
+  const sendDefaulterWarning = async (userId, template) => {
+    try {
+      const response = await axios.post(`${API}/admin/defaulter-warning/${userId}?template=${template}`, {}, { withCredentials: true });
+      toast.success(response.data.message);
+      // Open WhatsApp if link available
+      if (response.data.whatsapp_link) {
+        window.open(response.data.whatsapp_link, '_blank');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send warning');
     }
   };
 
@@ -598,7 +627,7 @@ const AdminDashboard = () => {
       <main className="flex-1 p-4">
         <div className="max-w-6xl mx-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-6 mb-6 border-2 border-black bg-white">
+            <TabsList className="grid w-full grid-cols-7 mb-6 border-2 border-black bg-white">
               <TabsTrigger 
                 data-testid="tab-pending"
                 value="pending" 
@@ -633,6 +662,17 @@ const AdminDashboard = () => {
               >
                 <AlertTriangle className="w-4 h-4 mr-1 hidden sm:block" />
                 Defaulters
+              </TabsTrigger>
+              <TabsTrigger 
+                data-testid="tab-payments"
+                value="payments" 
+                className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
+              >
+                <CreditCard className="w-4 h-4 mr-1 hidden sm:block" />
+                Payments
+                {pendingPayments.length > 0 && (
+                  <Badge className="ml-1 bg-yellow-500 text-black text-xs">{pendingPayments.length}</Badge>
+                )}
               </TabsTrigger>
               <TabsTrigger 
                 data-testid="tab-credit-invoices"
@@ -1066,6 +1106,15 @@ const AdminDashboard = () => {
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <h2 className="font-display text-xl uppercase">Monthly Defaulters</h2>
                 <div className="flex items-center gap-2">
+                  <Button
+                    data-testid="add-backlog-btn"
+                    size="sm"
+                    onClick={() => setShowBacklogDialog(true)}
+                    className="bg-hh-green text-black border-2 border-black shadow-brutal-sm text-xs"
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Backlog Entry
+                  </Button>
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <Input
@@ -1148,6 +1197,138 @@ const AdminDashboard = () => {
                           </table>
                         </div>
                       </details>
+
+                      {/* Warning Actions */}
+                      <div className="flex gap-2 mt-3 pt-3 border-t flex-wrap">
+                        <Button
+                          data-testid={`warn-overdue-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => sendDefaulterWarning(item.user.user_id, 'overdue')}
+                          className="flex-1 border-2 border-yellow-500 text-yellow-700 text-xs min-w-[90px]"
+                        >
+                          Overdue Notice
+                        </Button>
+                        <Button
+                          data-testid={`warn-limit-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => sendDefaulterWarning(item.user.user_id, 'limit_reached')}
+                          className="flex-1 border-2 border-orange-500 text-orange-700 text-xs min-w-[90px]"
+                        >
+                          Limit Reached
+                        </Button>
+                        <Button
+                          data-testid={`warn-suspended-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => sendDefaulterWarning(item.user.user_id, 'suspended')}
+                          className="flex-1 border-2 border-red-500 text-red-700 text-xs min-w-[90px]"
+                        >
+                          Suspended
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* PAYMENT VERIFICATION TAB */}
+            <TabsContent value="payments" className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-xl uppercase">Payment Verification</h2>
+                <Button
+                  data-testid="refresh-payments-btn"
+                  size="sm"
+                  variant="outline"
+                  onClick={fetchPendingPayments}
+                  className="border-2 border-black"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  Refresh
+                </Button>
+              </div>
+              <p className="text-sm text-gray-500">
+                Verify customer proof-of-payment (POP) submissions. Airtel Money: <strong>0733878020</strong>
+              </p>
+              
+              {pendingPayments.length === 0 ? (
+                <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg bg-white">
+                  <Check className="w-12 h-12 mx-auto text-hh-green mb-3" />
+                  <p className="text-gray-500">No pending payment verifications</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {pendingPayments.map((pop) => (
+                    <div
+                      key={pop.pop_id}
+                      data-testid={`payment-${pop.pop_id}`}
+                      className="p-4 border-2 border-yellow-500 rounded-lg shadow-brutal-sm bg-yellow-50"
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <p className="font-display font-bold text-sm">{pop.user_name}</p>
+                          <p className="text-xs text-gray-600">{pop.user_email}</p>
+                        </div>
+                        <Badge className={pop.payment_type === 'full' ? 'bg-hh-green text-black' : 'bg-blue-500 text-white'}>
+                          {pop.payment_type}
+                        </Badge>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 mb-3 text-sm">
+                        <div className="p-2 bg-white rounded border">
+                          <p className="text-xs text-gray-500">Invoice</p>
+                          <p className="font-mono font-bold text-xs">{pop.invoice_id}</p>
+                        </div>
+                        <div className="p-2 bg-white rounded border">
+                          <p className="text-xs text-gray-500">Amount Paid</p>
+                          <p className="font-display font-bold text-hh-green">KES {pop.amount_paid.toLocaleString()}</p>
+                        </div>
+                        <div className="p-2 bg-white rounded border">
+                          <p className="text-xs text-gray-500">Transaction Code</p>
+                          <p className="font-mono font-bold text-xs">{pop.transaction_code}</p>
+                        </div>
+                        <div className="p-2 bg-white rounded border">
+                          <p className="text-xs text-gray-500">Payment Method</p>
+                          <p className="text-xs font-medium">{pop.payment_method?.replace('_', ' ')}</p>
+                        </div>
+                      </div>
+                      
+                      {pop.notes && (
+                        <p className="text-xs text-gray-600 mb-3 p-2 bg-white rounded border italic">
+                          Note: {pop.notes}
+                        </p>
+                      )}
+                      
+                      <p className="text-xs text-gray-400 mb-3">
+                        Submitted: {pop.submitted_at ? format(new Date(pop.submitted_at), 'MMM dd, yyyy HH:mm') : '-'}
+                      </p>
+                      
+                      <div className="flex gap-2">
+                        <Button
+                          data-testid={`approve-payment-${pop.pop_id}`}
+                          size="sm"
+                          onClick={() => approvePayment(pop.pop_id)}
+                          className="flex-1 bg-hh-green text-black border-2 border-black"
+                        >
+                          <Check className="w-4 h-4 mr-1" />
+                          Approve
+                        </Button>
+                        <Button
+                          data-testid={`reject-payment-${pop.pop_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setVerifyingPayment(pop.pop_id);
+                            setShowRejectDialog(true);
+                          }}
+                          className="flex-1 border-2 border-red-500 text-red-500"
+                        >
+                          <X className="w-4 h-4 mr-1" />
+                          Reject
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1463,6 +1644,102 @@ const AdminDashboard = () => {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Backlog Credit Entry Dialog */}
+      <Dialog open={showBacklogDialog} onOpenChange={(open) => {
+        setShowBacklogDialog(open);
+        if (!open) { setBacklogUserId(''); setBacklogAmount(''); setBacklogDescription(''); }
+      }}>
+        <DialogContent className="max-w-md border-2 border-black shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase">Add Backlog Credit</DialogTitle>
+            <DialogDescription>Manually add a historical credit entry for a customer</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="font-display uppercase text-sm">Customer *</Label>
+              <Select value={backlogUserId} onValueChange={setBacklogUserId}>
+                <SelectTrigger data-testid="backlog-user-select" className="border-2 border-black">
+                  <SelectValue placeholder="Select customer" />
+                </SelectTrigger>
+                <SelectContent>
+                  {users.filter(u => u.role !== 'admin').map(u => (
+                    <SelectItem key={u.user_id} value={u.user_id}>
+                      {u.name} ({u.email})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="font-display uppercase text-sm">Amount (KES) *</Label>
+              <Input
+                data-testid="backlog-amount"
+                type="number"
+                value={backlogAmount}
+                onChange={(e) => setBacklogAmount(e.target.value)}
+                className="border-2 border-black"
+                placeholder="e.g. 25000"
+              />
+            </div>
+            <div>
+              <Label className="font-display uppercase text-sm">Description *</Label>
+              <Textarea
+                data-testid="backlog-description"
+                value={backlogDescription}
+                onChange={(e) => setBacklogDescription(e.target.value)}
+                className="border-2 border-black"
+                placeholder="e.g. Outstanding balance from February 2026"
+              />
+            </div>
+            <Button
+              data-testid="submit-backlog-btn"
+              onClick={submitBacklogCredit}
+              className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
+            >
+              Add Backlog Entry
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment Reject Dialog */}
+      <Dialog open={showRejectDialog} onOpenChange={(open) => {
+        setShowRejectDialog(open);
+        if (!open) { setVerifyingPayment(null); setVerifyRejectReason(''); }
+      }}>
+        <DialogContent className="max-w-sm border-2 border-red-500 shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase text-red-600">Reject Payment</DialogTitle>
+            <DialogDescription>Provide a reason for rejecting this payment proof</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              data-testid="reject-reason-input"
+              value={verifyRejectReason}
+              onChange={(e) => setVerifyRejectReason(e.target.value)}
+              className="border-2 border-black min-h-[100px]"
+              placeholder="e.g. Transaction code not found, amount mismatch, duplicate submission..."
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => { setShowRejectDialog(false); setVerifyingPayment(null); }}
+                className="flex-1 border-2 border-black"
+              >
+                Cancel
+              </Button>
+              <Button
+                data-testid="confirm-reject-payment-btn"
+                onClick={rejectPayment}
+                className="flex-1 bg-red-500 text-white border-2 border-red-700"
+              >
+                Reject Payment
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
