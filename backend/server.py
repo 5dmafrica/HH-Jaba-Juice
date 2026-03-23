@@ -125,6 +125,36 @@ class ManualInvoiceCreate(BaseModel):
 class StockUpdate(BaseModel):
     stock: int
 
+# Credit Purchase Invoice Models
+class CreditInvoiceLineItem(BaseModel):
+    flavor: str  # Tamarind, Watermelon, Beetroot, Pineapple, Hibiscus
+    quantity: int
+    unit_price: float = 500.0
+    status: str = "unpaid"  # 'paid' or 'unpaid'
+
+class CreditInvoiceCreate(BaseModel):
+    user_id: str
+    billing_period_start: str  # ISO date string
+    billing_period_end: str    # ISO date string
+    line_items: List[CreditInvoiceLineItem]
+    notes: Optional[str] = None
+
+class CreditInvoice(BaseModel):
+    invoice_id: str  # HHJ-INV-[Date]-[ID]
+    user_id: str
+    customer_name: str
+    customer_email: str
+    customer_phone: Optional[str] = None
+    billing_period_start: str
+    billing_period_end: str
+    line_items: List[dict]
+    subtotal: float
+    total_amount: float
+    status: str = "unpaid"  # 'paid', 'partial', 'unpaid'
+    notes: Optional[str] = None
+    created_at: str
+    created_by: str  # Admin who created it
+
 # ===== AUTH HELPERS =====
 
 async def get_session_token(request: Request) -> Optional[str]:
@@ -909,6 +939,200 @@ async def reject_manual_invoice(invoice_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Invoice not found")
     
     return {"message": "Invoice rejected"}
+
+# ===== CREDIT PURCHASE INVOICE ROUTES =====
+
+@api_router.post("/admin/credit-invoices")
+async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Request):
+    """Create a credit purchase invoice (admin only)"""
+    admin = await get_admin_user(request)
+    
+    # Get user details
+    user = await db.users.find_one({"user_id": invoice_data.user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Generate invoice ID: HHJ-INV-[Date]-[ID]
+    date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
+    # Get count of invoices today for sequential numbering
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = await db.credit_invoices.count_documents({
+        "created_at": {"$gte": today_start.isoformat()}
+    })
+    invoice_id = f"HHJ-INV-{date_str}-{str(today_count + 1).zfill(3)}"
+    
+    # Process line items and calculate totals
+    processed_items = []
+    subtotal = 0
+    
+    for item in invoice_data.line_items:
+        line_total = item.quantity * item.unit_price
+        processed_items.append({
+            "flavor": item.flavor,
+            "quantity": item.quantity,
+            "unit_price": item.unit_price,
+            "line_total": line_total,
+            "status": item.status
+        })
+        subtotal += line_total
+    
+    # Create invoice document
+    invoice_doc = {
+        "invoice_id": invoice_id,
+        "user_id": invoice_data.user_id,
+        "customer_name": user.get("name", ""),
+        "customer_email": user.get("email", ""),
+        "customer_phone": user.get("phone", ""),
+        "billing_period_start": invoice_data.billing_period_start,
+        "billing_period_end": invoice_data.billing_period_end,
+        "line_items": processed_items,
+        "subtotal": subtotal,
+        "total_amount": subtotal,
+        "status": "unpaid",
+        "notes": invoice_data.notes,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin.get("name", admin.get("email", "Admin")),
+        # Company details for invoice
+        "company_email": "contact@myhappyhour.co.ke",
+        "payment_method": "Airtel Money",
+        "payment_number": "0733878020"
+    }
+    
+    await db.credit_invoices.insert_one(invoice_doc)
+    
+    return await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+
+@api_router.get("/admin/credit-invoices")
+async def get_credit_invoices(request: Request, user_id: Optional[str] = None):
+    """Get all credit invoices (admin only)"""
+    await get_admin_user(request)
+    
+    query = {}
+    if user_id:
+        query["user_id"] = user_id
+    
+    invoices = await db.credit_invoices.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return invoices
+
+@api_router.get("/admin/credit-invoices/{invoice_id}")
+async def get_credit_invoice(invoice_id: str, request: Request):
+    """Get a specific credit invoice (admin only)"""
+    await get_admin_user(request)
+    
+    invoice = await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    return invoice
+
+@api_router.put("/admin/credit-invoices/{invoice_id}/status")
+async def update_credit_invoice_status(invoice_id: str, request: Request):
+    """Update credit invoice status (admin only)"""
+    await get_admin_user(request)
+    
+    body = await request.json()
+    new_status = body.get("status", "unpaid")
+    
+    if new_status not in ["paid", "partial", "unpaid"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    result = await db.credit_invoices.update_one(
+        {"invoice_id": invoice_id},
+        {"$set": {"status": new_status}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    return {"message": f"Invoice status updated to {new_status}"}
+
+@api_router.put("/admin/credit-invoices/{invoice_id}/line-item/{item_index}/status")
+async def update_line_item_status(invoice_id: str, item_index: int, request: Request):
+    """Update individual line item status (admin only)"""
+    await get_admin_user(request)
+    
+    body = await request.json()
+    new_status = body.get("status", "unpaid")
+    
+    if new_status not in ["paid", "unpaid"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    invoice = await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    line_items = invoice.get("line_items", [])
+    if item_index < 0 or item_index >= len(line_items):
+        raise HTTPException(status_code=400, detail="Invalid line item index")
+    
+    line_items[item_index]["status"] = new_status
+    
+    # Recalculate overall status
+    all_paid = all(item.get("status") == "paid" for item in line_items)
+    any_paid = any(item.get("status") == "paid" for item in line_items)
+    
+    if all_paid:
+        overall_status = "paid"
+    elif any_paid:
+        overall_status = "partial"
+    else:
+        overall_status = "unpaid"
+    
+    await db.credit_invoices.update_one(
+        {"invoice_id": invoice_id},
+        {"$set": {"line_items": line_items, "status": overall_status}}
+    )
+    
+    return await db.credit_invoices.find_one({"invoice_id": invoice_id}, {"_id": 0})
+
+@api_router.delete("/admin/credit-invoices/{invoice_id}")
+async def delete_credit_invoice(invoice_id: str, request: Request):
+    """Delete a credit invoice (admin only)"""
+    await get_admin_user(request)
+    
+    result = await db.credit_invoices.delete_one({"invoice_id": invoice_id})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    
+    return {"message": "Invoice deleted"}
+
+@api_router.get("/admin/user-credit-history/{user_id}")
+async def get_user_credit_history(user_id: str, request: Request, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Get user's credit purchase history for invoice generation (admin only)"""
+    await get_admin_user(request)
+    
+    query = {
+        "user_id": user_id,
+        "payment_method": "credit"
+    }
+    
+    if start_date or end_date:
+        query["created_at"] = {}
+        if start_date:
+            query["created_at"]["$gte"] = start_date
+        if end_date:
+            query["created_at"]["$lte"] = end_date
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    # Aggregate by flavor
+    flavor_totals = {}
+    for order in orders:
+        for item in order.get("items", []):
+            flavor = item.get("product_name", "").replace("Happy Hour Jaba - ", "")
+            qty = item.get("quantity", 0)
+            if flavor in flavor_totals:
+                flavor_totals[flavor] += qty
+            else:
+                flavor_totals[flavor] = qty
+    
+    return {
+        "orders": orders,
+        "flavor_summary": flavor_totals,
+        "total_orders": len(orders),
+        "total_amount": sum(o.get("total_amount", 0) for o in orders)
+    }
 
 # ===== ROOT ROUTE =====
 

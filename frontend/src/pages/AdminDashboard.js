@@ -12,10 +12,11 @@ import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { 
   Beer, ArrowLeft, Clock, Package, Users, AlertTriangle, FileText,
-  Check, X, Plus, Minus, RefreshCw, Mail, Smartphone, CreditCard
+  Check, X, Plus, Minus, RefreshCw, Mail, Smartphone, CreditCard, Receipt
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import CreditInvoiceModule from '../components/CreditInvoiceModule';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -268,7 +269,7 @@ const AdminDashboard = () => {
       <main className="flex-1 p-4">
         <div className="max-w-6xl mx-auto">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full grid-cols-5 mb-6 border-2 border-black bg-white">
+            <TabsList className="grid w-full grid-cols-6 mb-6 border-2 border-black bg-white">
               <TabsTrigger 
                 data-testid="tab-pending"
                 value="pending" 
@@ -305,12 +306,20 @@ const AdminDashboard = () => {
                 Defaulters
               </TabsTrigger>
               <TabsTrigger 
+                data-testid="tab-credit-invoices"
+                value="credit-invoices" 
+                className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
+              >
+                <Receipt className="w-4 h-4 mr-1 hidden sm:block" />
+                Credit Inv
+              </TabsTrigger>
+              <TabsTrigger 
                 data-testid="tab-invoices"
                 value="invoices" 
                 className="font-display uppercase text-xs data-[state=active]:bg-hh-green data-[state=active]:text-black"
               >
                 <FileText className="w-4 h-4 mr-1 hidden sm:block" />
-                Invoices
+                Manual
               </TabsTrigger>
             </TabsList>
 
@@ -581,6 +590,11 @@ const AdminDashboard = () => {
                   ))}
                 </div>
               )}
+            </TabsContent>
+
+            {/* CREDIT PURCHASE INVOICES TAB */}
+            <TabsContent value="credit-invoices" className="space-y-4">
+              <CreditInvoiceModule users={users} onRefresh={loadAllData} />
             </TabsContent>
 
             {/* MANUAL INVOICES TAB */}
