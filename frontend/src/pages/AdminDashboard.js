@@ -13,7 +13,7 @@ import { Textarea } from '../components/ui/textarea';
 import { 
   Beer, ArrowLeft, Clock, Package, Users, AlertTriangle, FileText,
   Check, X, Plus, Minus, RefreshCw, Mail, Smartphone, CreditCard, Receipt,
-  Search, Gift, MessageSquare, Share2, Calendar
+  Search, Gift, MessageSquare, Share2, Calendar, Bell, Trash2, ChevronDown, ChevronUp, Send
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
@@ -87,6 +87,16 @@ const AdminDashboard = () => {
   
   // User to delete
   const [userToDelete, setUserToDelete] = useState(null);
+  const [showDeleteUserDialog, setShowDeleteUserDialog] = useState(false);
+  
+  // Admin notification state
+  const [adminNotifications, setAdminNotifications] = useState([]);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [showNotifDropdown, setShowNotifDropdown] = useState(false);
+  const [lastNotifCheck, setLastNotifCheck] = useState(null);
+  
+  // Expanded reconciliation rows
+  const [expandedUsers, setExpandedUsers] = useState({});
   
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -108,6 +118,68 @@ const AdminDashboard = () => {
       return () => clearInterval(interval);
     }
   }, [activeTab, pendingFilter]);
+
+  // Poll for admin notifications every 15 seconds
+  useEffect(() => {
+    fetchAdminNotifications();
+    const interval = setInterval(() => {
+      fetchAdminNotifications();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchAdminNotifications = async () => {
+    try {
+      const response = await axios.get(`${API}/notifications`, { withCredentials: true });
+      const notifs = response.data;
+      setAdminNotifications(notifs);
+      
+      const unread = notifs.filter(n => !n.read).length;
+      
+      // Show toast for new order notifications
+      if (lastNotifCheck !== null && unread > unreadNotifCount) {
+        const newNotifs = notifs.filter(n => !n.read && n.notification_type === 'order');
+        if (newNotifs.length > 0) {
+          const latest = newNotifs[0];
+          toast.info(latest.message, { 
+            description: latest.title,
+            duration: 5000 
+          });
+        }
+      }
+      
+      setUnreadNotifCount(unread);
+      setLastNotifCheck(Date.now());
+    } catch (error) {
+      // Silently fail for notification polling
+    }
+  };
+
+  const markNotificationRead = async (notificationId) => {
+    try {
+      await axios.put(`${API}/notifications/${notificationId}/read`, {}, { withCredentials: true });
+      fetchAdminNotifications();
+    } catch (error) {
+      // Silently fail
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    try {
+      const unreadNotifs = adminNotifications.filter(n => !n.read);
+      await Promise.all(unreadNotifs.map(n => 
+        axios.put(`${API}/notifications/${n.notification_id}/read`, {}, { withCredentials: true })
+      ));
+      fetchAdminNotifications();
+      toast.success('All notifications marked as read');
+    } catch (error) {
+      toast.error('Failed to mark notifications as read');
+    }
+  };
+
+  const toggleExpandUser = (userId) => {
+    setExpandedUsers(prev => ({ ...prev, [userId]: !prev[userId] }));
+  };
 
   const loadAllData = async () => {
     setLoading(true);
@@ -403,7 +475,7 @@ const AdminDashboard = () => {
   }, [pendingFilter]);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-gray-50 flex flex-col" onClick={() => showNotifDropdown && setShowNotifDropdown(false)}>
       {/* Header */}
       <header className="bg-black text-white border-b-2 border-hh-green p-4 sticky top-0 z-40">
         <div className="max-w-6xl mx-auto flex items-center gap-3">
@@ -427,7 +499,68 @@ const AdminDashboard = () => {
               <p className="text-xs text-gray-400">Happy Hour Jaba, Nairobi</p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {/* Notification Bell */}
+            <div className="relative">
+              <Button
+                data-testid="admin-notifications-bell"
+                variant="ghost"
+                size="sm"
+                onClick={(e) => { e.stopPropagation(); setShowNotifDropdown(!showNotifDropdown); }}
+                className="text-white hover:bg-gray-800 relative"
+                title="Notifications"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center font-bold">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </Button>
+              
+              {/* Notification Dropdown */}
+              {showNotifDropdown && (
+                <div className="absolute right-0 top-full mt-2 w-80 bg-white border-2 border-black rounded-lg shadow-brutal-lg z-50 max-h-96 overflow-y-auto">
+                  <div className="p-3 border-b-2 border-black bg-gray-50 flex items-center justify-between">
+                    <p className="font-display text-sm uppercase font-bold">Notifications</p>
+                    {unreadNotifCount > 0 && (
+                      <button
+                        data-testid="mark-all-read-btn"
+                        onClick={markAllNotificationsRead}
+                        className="text-xs text-hh-green hover:underline font-medium"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  {adminNotifications.length === 0 ? (
+                    <div className="p-4 text-center text-gray-500 text-sm">
+                      No notifications
+                    </div>
+                  ) : (
+                    adminNotifications.slice(0, 20).map((notif) => (
+                      <div
+                        key={notif.notification_id}
+                        data-testid={`admin-notif-${notif.notification_id}`}
+                        onClick={() => { if (!notif.read) markNotificationRead(notif.notification_id); }}
+                        className={`p-3 border-b last:border-b-0 cursor-pointer hover:bg-gray-50 transition-colors ${!notif.read ? 'bg-green-50' : ''}`}
+                      >
+                        <div className="flex items-start gap-2">
+                          {!notif.read && <div className="w-2 h-2 rounded-full bg-hh-green mt-1.5 flex-shrink-0" />}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold truncate">{notif.title}</p>
+                            <p className="text-xs text-gray-600 line-clamp-2">{notif.message}</p>
+                            <p className="text-xs text-gray-400 mt-1">
+                              {notif.created_at ? format(new Date(notif.created_at), 'MMM dd, HH:mm') : ''}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
             <Button
               data-testid="push-offer-btn"
               variant="ghost"
@@ -744,7 +877,24 @@ const AdminDashboard = () => {
 
             {/* RECONCILIATION TAB */}
             <TabsContent value="reconciliation" className="space-y-4">
-              <h2 className="font-display text-xl uppercase">Credit Reconciliation</h2>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h2 className="font-display text-xl uppercase">Credit Reconciliation</h2>
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <Input
+                      data-testid="reconciliation-search"
+                      placeholder="Search by name..."
+                      value={reconciliationSearch}
+                      onChange={(e) => {
+                        setReconciliationSearch(e.target.value);
+                        fetchReconciliation(e.target.value);
+                      }}
+                      className="pl-10 border-2 border-black w-48"
+                    />
+                  </div>
+                </div>
+              </div>
               
               {reconciliation.length === 0 ? (
                 <div className="text-center py-12 border-2 border-dashed border-gray-300 rounded-lg bg-white">
@@ -773,19 +923,116 @@ const AdminDashboard = () => {
                         </div>
                       </div>
 
-                      <details className="mt-3">
-                        <summary className="cursor-pointer text-sm text-gray-600 hover:text-black">
-                          View {item.orders.length} orders
-                        </summary>
-                        <div className="mt-2 space-y-2 text-sm">
-                          {item.orders.slice(0, 5).map((order) => (
-                            <div key={order.order_id} className="flex justify-between p-2 bg-gray-50 rounded">
-                              <span>{order.order_id}</span>
-                              <span>KES {order.total_amount.toLocaleString()}</span>
-                            </div>
-                          ))}
+                      {/* Order Summary Stats */}
+                      <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+                        <div className="p-2 bg-gray-50 rounded border">
+                          <p className="text-xs text-gray-500">Orders</p>
+                          <p className="font-display font-bold">{item.orders?.length || 0}</p>
                         </div>
-                      </details>
+                        <div className="p-2 bg-blue-50 rounded border border-blue-200">
+                          <p className="text-xs text-gray-500">Pending</p>
+                          <p className="font-display font-bold text-blue-600">
+                            KES {(item.total_pending || 0).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="p-2 bg-red-50 rounded border border-red-200">
+                          <p className="text-xs text-gray-500">Total Owed</p>
+                          <p className="font-display font-bold text-red-600">
+                            KES {item.outstanding_balance.toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Expandable Order Breakdown */}
+                      <div className="border-t pt-3">
+                        <button
+                          data-testid={`toggle-orders-${item.user.user_id}`}
+                          onClick={() => toggleExpandUser(item.user.user_id)}
+                          className="flex items-center gap-2 text-sm text-gray-600 hover:text-black w-full"
+                        >
+                          {expandedUsers[item.user.user_id] ? (
+                            <ChevronUp className="w-4 h-4" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4" />
+                          )}
+                          <span className="font-medium">
+                            View {item.orders?.length || 0} order details
+                          </span>
+                        </button>
+                        
+                        {expandedUsers[item.user.user_id] && item.orders && (
+                          <div className="mt-3 border-2 border-gray-200 rounded-lg overflow-hidden">
+                            <table className="w-full text-sm">
+                              <thead className="bg-black text-hh-green">
+                                <tr>
+                                  <th className="p-2 text-left font-display uppercase text-xs">Timestamp</th>
+                                  <th className="p-2 text-left font-display uppercase text-xs">Flavor</th>
+                                  <th className="p-2 text-center font-display uppercase text-xs">Qty</th>
+                                  <th className="p-2 text-right font-display uppercase text-xs">Cost</th>
+                                  <th className="p-2 text-center font-display uppercase text-xs">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {item.orders.map((order) =>
+                                  (order.items || []).map((orderItem, idx) => (
+                                    <tr key={`${order.order_id}-${idx}`} className="border-t border-gray-100 hover:bg-gray-50">
+                                      <td className="p-2 text-xs text-gray-600">
+                                        {order.created_at ? format(new Date(order.created_at), 'MMM dd, HH:mm') : '-'}
+                                      </td>
+                                      <td className="p-2 font-medium">
+                                        {(orderItem.product_name || '').replace('Happy Hour Jaba - ', '')}
+                                      </td>
+                                      <td className="p-2 text-center">{orderItem.quantity}</td>
+                                      <td className="p-2 text-right font-bold">
+                                        KES {((orderItem.quantity || 0) * (orderItem.price || 500)).toLocaleString()}
+                                      </td>
+                                      <td className="p-2 text-center">
+                                        <Badge className={`text-xs ${
+                                          order.status === 'fulfilled' ? 'bg-hh-green text-black' :
+                                          order.status === 'pending' ? 'bg-yellow-400 text-black' :
+                                          'bg-red-500 text-white'
+                                        }`}>
+                                          {order.status}
+                                        </Badge>
+                                      </td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex gap-2 mt-3 pt-3 border-t">
+                        <Button
+                          data-testid={`share-report-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setReportUserId(item.user.user_id);
+                            setShowShareReportDialog(true);
+                          }}
+                          className="flex-1 border-2 border-black text-sm"
+                        >
+                          <Send className="w-3 h-3 mr-1" />
+                          Share Report
+                        </Button>
+                        <Button
+                          data-testid={`delete-user-${item.user.user_id}`}
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setUserToDelete(item.user);
+                            setShowDeleteUserDialog(true);
+                          }}
+                          className="border-2 border-red-500 text-red-500 hover:bg-red-50 text-sm"
+                        >
+                          <Trash2 className="w-3 h-3 mr-1" />
+                          Delete User
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1211,6 +1458,139 @@ const AdminDashboard = () => {
               Generate Invoice
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Share Reconciliation Report Dialog */}
+      <Dialog open={showShareReportDialog} onOpenChange={(open) => {
+        setShowShareReportDialog(open);
+        if (!open) { setReportPreview(null); setReportStartDate(''); setReportEndDate(''); }
+      }}>
+        <DialogContent className="max-w-lg border-2 border-black shadow-brutal-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase">Share Reconciliation Report</DialogTitle>
+            <DialogDescription>
+              Send credit reconciliation report to {users.find(u => u.user_id === reportUserId)?.name || 'user'} via email and in-app notification
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="font-display uppercase text-sm">Start Date</Label>
+                <Input
+                  data-testid="report-start-date"
+                  type="date"
+                  value={reportStartDate}
+                  onChange={(e) => setReportStartDate(e.target.value)}
+                  className="border-2 border-black"
+                />
+              </div>
+              <div>
+                <Label className="font-display uppercase text-sm">End Date</Label>
+                <Input
+                  data-testid="report-end-date"
+                  type="date"
+                  value={reportEndDate}
+                  onChange={(e) => setReportEndDate(e.target.value)}
+                  className="border-2 border-black"
+                />
+              </div>
+            </div>
+
+            <Button
+              data-testid="preview-report-btn"
+              variant="outline"
+              onClick={() => fetchReportPreview(reportUserId, reportStartDate, reportEndDate)}
+              className="w-full border-2 border-black"
+            >
+              <Search className="w-4 h-4 mr-2" />
+              Preview Report
+            </Button>
+
+            {/* Report Preview */}
+            {reportPreview && (
+              <div className="border-2 border-black rounded-lg overflow-hidden">
+                <div className="p-3 bg-black text-white">
+                  <p className="font-display font-bold text-hh-green">{reportPreview.user?.name}</p>
+                  <p className="text-xs text-gray-300">{reportPreview.user?.email}</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Period: {reportPreview.period?.start || 'All time'} — {reportPreview.period?.end || 'Present'}
+                  </p>
+                </div>
+                <div className="p-3 space-y-2">
+                  <div className="flex justify-between items-center p-2 bg-red-50 rounded border border-red-200">
+                    <span className="text-sm font-medium">Outstanding Balance</span>
+                    <span className="font-display font-bold text-red-600">
+                      KES {(reportPreview.outstanding_balance || 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center p-2 bg-gray-50 rounded border">
+                    <span className="text-sm font-medium">Total Credit Used</span>
+                    <span className="font-display font-bold">
+                      KES {(reportPreview.total_amount || 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    {reportPreview.order_breakdown?.length || 0} order item(s) in period
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <Button
+              data-testid="send-report-btn"
+              onClick={shareReconciliationReport}
+              className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
+            >
+              <Send className="w-4 h-4 mr-2" />
+              Send Report to User
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete User Confirmation Dialog */}
+      <Dialog open={showDeleteUserDialog} onOpenChange={(open) => {
+        setShowDeleteUserDialog(open);
+        if (!open) setUserToDelete(null);
+      }}>
+        <DialogContent className="max-w-sm border-2 border-red-500 shadow-brutal-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl uppercase text-red-600">Delete User</DialogTitle>
+            <DialogDescription>
+              This action cannot be undone. All data for this user will be permanently deleted.
+            </DialogDescription>
+          </DialogHeader>
+          {userToDelete && (
+            <div className="space-y-4">
+              <div className="p-4 bg-red-50 border-2 border-red-200 rounded-lg">
+                <p className="font-bold">{userToDelete.name}</p>
+                <p className="text-sm text-gray-600">{userToDelete.email}</p>
+                <p className="text-sm text-gray-600">{userToDelete.phone}</p>
+              </div>
+              <p className="text-sm text-gray-600">
+                This will delete the user account, all their orders, notifications, and invoices.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  data-testid="cancel-delete-user-btn"
+                  variant="outline"
+                  onClick={() => { setShowDeleteUserDialog(false); setUserToDelete(null); }}
+                  className="flex-1 border-2 border-black"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  data-testid="confirm-delete-user-btn"
+                  onClick={() => { deleteUser(userToDelete.user_id); setShowDeleteUserDialog(false); }}
+                  className="flex-1 bg-red-500 text-white border-2 border-red-700"
+                >
+                  <Trash2 className="w-4 h-4 mr-1" />
+                  Delete User
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

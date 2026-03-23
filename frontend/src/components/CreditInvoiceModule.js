@@ -139,10 +139,15 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
   };
 
   const handleDeleteInvoice = async (invoiceId) => {
+    if (!invoiceId) {
+      toast.error('Invalid invoice ID');
+      return;
+    }
     if (!window.confirm('Are you sure you want to delete this invoice?')) return;
     
     try {
-      await axios.delete(`${API}/admin/credit-invoices/${invoiceId}`, { withCredentials: true });
+      const encodedId = encodeURIComponent(invoiceId);
+      await axios.delete(`${API}/admin/credit-invoices/${encodedId}`, { withCredentials: true });
       toast.success('Invoice deleted');
       fetchInvoices();
       if (selectedInvoice?.invoice_id === invoiceId) {
@@ -150,7 +155,8 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
         setSelectedInvoice(null);
       }
     } catch (error) {
-      toast.error('Failed to delete invoice');
+      console.error('Delete invoice error:', error.response?.data || error.message);
+      toast.error(error.response?.data?.detail || 'Failed to delete invoice');
     }
   };
 
@@ -346,10 +352,11 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                   View
                 </Button>
                 <Button
+                  data-testid={`delete-credit-invoice-${invoice.invoice_id}`}
                   size="sm"
                   variant="outline"
-                  onClick={() => handleDeleteInvoice(invoice.invoice_id)}
-                  className="border-2 border-red-500 text-red-500"
+                  onClick={(e) => { e.stopPropagation(); handleDeleteInvoice(invoice.invoice_id); }}
+                  className="border-2 border-red-500 text-red-500 hover:bg-red-50"
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>
