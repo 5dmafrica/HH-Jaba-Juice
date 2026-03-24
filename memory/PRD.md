@@ -44,9 +44,17 @@ Mobile-first internal ordering system for 5DM employees to order Happy Hour Jaba
 - [x] Payment approved/rejected/declined notifications
 - [x] Admin notification bell, push offer tool
 
+### Deployment Guide
+- [x] Created DEPLOYMENT.md with full external hosting instructions (Feb 2026)
+  - MongoDB Atlas, Google OAuth replacement, Railway/Render/Fly.io backend, Cloudflare Pages frontend
+
+## Known Issues
+- Email notifications broken (Resend API key invalid) — non-blocking
+
 ## Prioritized Backlog
-### P1
+### P0
 - [ ] M-Pesa Daraja API integration
+### P1
 - [ ] PDF invoice generation
 - [ ] Object Storage for image uploads in chat
 ### P2
@@ -54,3 +62,7 @@ Mobile-first internal ordering system for 5DM employees to order Happy Hour Jaba
 - [ ] CSV export, email statements
 ### P3
 - [ ] WebSocket notifications, order scheduling, loyalty points
+
+## Refactoring Needed
+- `server.py` (2300+ lines) → Break into route modules
+- `AdminDashboard.js` (2200+ lines) → Extract tab components
