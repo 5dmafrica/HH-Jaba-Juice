@@ -11,7 +11,7 @@ import uuid
 # Get backend URL from environment
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 if not BASE_URL:
-    BASE_URL = "https://jaba-orders.preview.emergentagent.com"
+    BASE_URL = "https://hh-jaba-portal.preview.emergentagent.com"
 
 # MongoDB connection for test setup
 from pymongo import MongoClient

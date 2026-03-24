@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
 class CreditInvoiceAPITester:
-    def __init__(self, base_url="https://jaba-orders.preview.emergentagent.com"):
+    def __init__(self, base_url="https://hh-jaba-portal.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
         self.admin_token = "admin_session_1774278086808"

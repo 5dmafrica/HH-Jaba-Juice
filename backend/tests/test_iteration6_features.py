@@ -16,7 +16,7 @@ import os
 import uuid
 from datetime import datetime, timezone, timedelta
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://jaba-orders.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://hh-jaba-portal.preview.emergentagent.com').rstrip('/')
 
 # Test session tokens (created by setup script)
 ADMIN_SESSION_TOKEN = "test-admin-session-13514af2"

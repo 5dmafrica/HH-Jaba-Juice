@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 import uuid
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://jaba-orders.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://hh-jaba-portal.preview.emergentagent.com').rstrip('/')
 
 # Session tokens created in MongoDB
 ADMIN_SESSION_TOKEN = "test-admin-session-c8a2d280"
