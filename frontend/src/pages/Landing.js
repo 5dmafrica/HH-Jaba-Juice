@@ -106,7 +106,7 @@ const Landing = () => {
 
       {/* Footer */}
       <footer className="bg-black text-white p-4 text-center">
-        <p className="text-sm">© 2024 5DM Africa. Happy Hour Jaba.</p>
+        <p className="text-sm">© 2026 5DM Africa. Happy Hour Jaba.</p>
       </footer>
     </div>
   );

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -c \":*)",
+      "Bash(ls /c/Python*/)",
+      "Read(//c/Users/chris/AppData/Local/Programs/Python//**)"
+    ]
+  }
+}

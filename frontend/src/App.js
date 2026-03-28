@@ -63,18 +63,10 @@ const PublicRoute = ({ children }) => {
 
 // App Router Component
 function AppRouter() {
-  const location = useLocation();
-
-  // CRITICAL: Check URL fragment for session_id synchronously during render
-  // This prevents race conditions by processing OAuth callback FIRST
-  // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
-  }
-
   return (
     <Routes>
       <Route path="/" element={<PublicRoute><Landing /></PublicRoute>} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/profile-setup" element={<ProtectedRoute><ProfileSetup /></ProtectedRoute>} />
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><OrderHistory /></ProtectedRoute>} />

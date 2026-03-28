@@ -1,0 +1,91 @@
+# Hide nginx version
+server_tokens off;
+
+# Rate limiting zones
+limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=60r/m;
+
+# HTTP → HTTPS redirect
+server {
+    listen 65.108.239.236:80;
+    server_name 5dm.myhappyhour.co.ke;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    server_name 5dm.myhappyhour.co.ke;
+    listen 65.108.239.236:443 ssl;
+    http2 on;
+
+    ssl_certificate "/var/www/httpd-cert/5dm.myhappyhour.co.ke_2026-03-27-17-56_24.crt";
+    ssl_certificate_key "/var/www/httpd-cert/5dm.myhappyhour.co.ke_2026-03-27-17-56_24.key";
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL_5dm:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    client_max_body_size 5m;
+    charset utf-8;
+
+    gzip on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types text/css text/plain application/json application/javascript image/svg+xml;
+    gzip_comp_level 6;
+
+    # Block hidden files and sensitive paths
+    location ~ /\. {
+        deny all;
+    }
+    location ~* \.(env|sql|py|pyc|log|sh|cfg|ini)$ {
+        deny all;
+    }
+    location ~ /(backend|venv|__pycache__) {
+        deny all;
+    }
+
+    # Rate-limit auth endpoints
+    location ~ ^/api/auth/ {
+        limit_req zone=auth_limit burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+    }
+
+    # Rate-limit all other API endpoints
+    location /api/ {
+        limit_req zone=api_limit burst=20 nodelay;
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+    }
+
+    # Serve static assets directly from frontend build
+    location ~* ^.+\.(jpg|jpeg|gif|png|svg|js|css|ico|woff|woff2|ttf|otf|webp|pdf|map)$ {
+        root /var/www/fastuser/data/www/5dm.myhappyhour.co.ke/frontend/build;
+        try_files $uri @fallback;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # All other routes → FastAPI (serves index.html for React Router)
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+    }
+
+    location @fallback {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/proxy_params;
+    }
+
+    error_log /var/www/fastuser/data/logs/5dm.myhappyhour.co.ke-frontend.error.log;
+    access_log /var/www/fastuser/data/logs/5dm.myhappyhour.co.ke-frontend.access.log;
+}

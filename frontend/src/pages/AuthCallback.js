@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { Beer } from 'lucide-react';
@@ -9,53 +9,47 @@ const API = `${BACKEND_URL}/api`;
 
 const AuthCallback = () => {
   const navigate = useNavigate();
-  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const { updateUser } = useAuth();
   const hasProcessed = useRef(false);
 
   useEffect(() => {
-    // Use useRef to prevent double processing in StrictMode
     if (hasProcessed.current) return;
     hasProcessed.current = true;
 
-    const processAuth = async () => {
+    // Check for error passed in query string from backend
+    const error = searchParams.get('error');
+    if (error) {
+      const messages = {
+        unauthorized_domain: 'Only @5dm.africa email addresses are allowed.',
+        google_auth_denied: 'Google sign-in was cancelled.',
+        invalid_state: 'Security check failed. Please try again.',
+      };
+      navigate('/', { replace: true, state: { error: messages[error] || 'Authentication failed.' } });
+      return;
+    }
+
+    // Backend has already set the session cookie — just fetch the user
+    const fetchUser = async () => {
       try {
-        // Extract session_id from URL hash
-        const hash = location.hash;
-        const sessionIdMatch = hash.match(/session_id=([^&]+)/);
-        
-        if (!sessionIdMatch) {
-          navigate('/', { replace: true });
-          return;
-        }
-
-        const sessionId = sessionIdMatch[1];
-
-        // Exchange session_id for session_token
-        const response = await axios.post(
-          `${API}/auth/session`,
-          { session_id: sessionId },
-          { withCredentials: true }
-        );
-
-        const userData = response.data.user;
+        const response = await axios.get(`${API}/auth/me`, { withCredentials: true });
+        const userData = response.data;
         updateUser(userData);
 
-        // Check if profile setup is needed
         if (!userData.phone || !userData.accepted_terms) {
-          navigate('/profile-setup', { replace: true, state: { user: userData } });
+          navigate('/profile-setup', { replace: true });
         } else {
-          navigate('/dashboard', { replace: true, state: { user: userData } });
+          navigate('/dashboard', { replace: true });
         }
-      } catch (error) {
-        console.error('Auth callback error:', error);
-        const errorMessage = error.response?.data?.detail || 'Authentication failed';
+      } catch (err) {
+        console.error('Auth callback error:', err);
+        const errorMessage = err.response?.data?.detail || 'Authentication failed';
         navigate('/', { replace: true, state: { error: errorMessage } });
       }
     };
 
-    processAuth();
-  }, [location, navigate, updateUser]);
+    fetchUser();
+  }, [navigate, searchParams, updateUser]);
 
   return (
     <div className="min-h-screen bg-white flex items-center justify-center">
