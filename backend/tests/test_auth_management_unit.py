@@ -172,3 +172,61 @@ def test_cannot_remove_last_super_admin(monkeypatch):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "At least one super admin must remain assigned"
+
+
+def test_get_dev_users_returns_current_runtime_users(monkeypatch):
+    async def fake_get_dev_auth_users():
+        return [
+            {"user_id": "user_1", "email": "customer@5dm.africa", "name": "Customer One", "role": "user"},
+            {"user_id": "admin_1", "email": "admin@5dm.africa", "name": "Admin One", "role": "admin"},
+            {"user_id": "other_1", "email": "someone@example.com", "name": "Other", "role": "user"},
+        ]
+
+    async def fake_is_email_domain_approved(email):
+        return email.endswith("@5dm.africa")
+
+    monkeypatch.setattr(server, "ENABLE_DEV_AUTH", True)
+    monkeypatch.setattr(server, "get_dev_auth_users", fake_get_dev_auth_users)
+    monkeypatch.setattr(server, "is_email_domain_approved", fake_is_email_domain_approved)
+
+    response = client.get("/api/dev/users")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"user_id": "user_1", "email": "customer@5dm.africa", "name": "Customer One", "role": "user"},
+        {"user_id": "admin_1", "email": "admin@5dm.africa", "name": "Admin One", "role": "admin"},
+    ]
+
+
+def test_dev_login_without_email_uses_first_available_runtime_user(monkeypatch):
+    async def fake_get_dev_auth_users():
+        return [
+            {"user_id": "user_1", "email": "customer@5dm.africa", "name": "Customer One", "role": "user"},
+            {"user_id": "admin_1", "email": "admin@5dm.africa", "name": "Admin One", "role": "admin"},
+        ]
+
+    async def fake_is_email_domain_approved(email):
+        return email.endswith("@5dm.africa")
+
+    async def fake_fetchone(sql, params=None):
+        if "SELECT * FROM users WHERE email=%s" in sql:
+            return {"user_id": "user_1", "email": "customer@5dm.africa"}
+        return None
+
+    async def fake_create_session_token(user_id):
+        return f"session-for-{user_id}"
+
+    def fake_build_session_response(session_token, redirect_url=None):
+        return {"session_token": session_token, "redirect_url": redirect_url}
+
+    monkeypatch.setattr(server, "ENABLE_DEV_AUTH", True)
+    monkeypatch.setattr(server, "get_dev_auth_users", fake_get_dev_auth_users)
+    monkeypatch.setattr(server, "is_email_domain_approved", fake_is_email_domain_approved)
+    monkeypatch.setattr(server, "db_fetchone", fake_fetchone)
+    monkeypatch.setattr(server, "create_session_token", fake_create_session_token)
+    monkeypatch.setattr(server, "build_session_response", fake_build_session_response)
+
+    response = client.get("/api/dev/login")
+
+    assert response.status_code == 200
+    assert response.json()["session_token"] == "session-for-user_1"

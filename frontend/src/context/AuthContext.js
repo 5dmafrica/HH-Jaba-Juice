@@ -3,6 +3,7 @@ import axios from 'axios';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const ENABLE_DEV_AUTH = process.env.REACT_APP_ENABLE_DEV_AUTH === 'true';
 
 const AuthContext = createContext(null);
 
@@ -46,6 +47,10 @@ export const AuthProvider = ({ children }) => {
   }, [checkAuth]);
 
   const login = () => {
+    if (ENABLE_DEV_AUTH) {
+      window.location.href = `${BACKEND_URL}/api/dev/login`;
+      return;
+    }
     window.location.href = `${BACKEND_URL}/api/auth/google`;
   };
 

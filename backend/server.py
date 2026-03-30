@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
 import secrets
+import html
 from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).parent
@@ -198,12 +199,15 @@ class DisputeMessage(BaseModel):
     message: str
     pop_id: str
 
-class BacklogCreditEntry(BaseModel):
+class StartingCreditEntry(BaseModel):
     user_id: str
     amount: float
     description: str
     billing_period_start: Optional[str] = None
     billing_period_end: Optional[str] = None
+
+# Backward-compatible alias used by older backlog-credit clients.
+BacklogCreditEntry = StartingCreditEntry
 
 class CreditInvoiceLineItem(BaseModel):
     flavor: str
@@ -319,6 +323,22 @@ def is_actual_super_admin(user: Optional[dict]) -> bool:
 async def get_privileged_users() -> list:
     return await db_fetchall(
         "SELECT * FROM users WHERE role IN ('admin','super_admin') ORDER BY created_at ASC"
+    )
+
+async def get_dev_auth_users() -> list:
+    return await db_fetchall(
+        """SELECT user_id, email, name, role
+           FROM users
+           WHERE email LIKE %s
+           ORDER BY CASE role
+               WHEN 'user' THEN 0
+               WHEN 'admin' THEN 1
+               WHEN 'super_admin' THEN 2
+               ELSE 3
+           END,
+           created_at ASC,
+           name ASC""",
+        ('%@%',)
     )
 
 async def is_email_domain_approved(email: str) -> bool:
@@ -524,6 +544,142 @@ async def send_email(recipient_email: str, subject: str, html_content: str):
         logger.error(f"Failed to send email: {str(e)}")
         return None
 
+
+def _format_email_currency(amount) -> str:
+    try:
+        return f"KES {float(amount or 0):,.2f}"
+    except (TypeError, ValueError):
+        return f"KES {amount}"
+
+
+def _format_email_date(value) -> str:
+    if not value:
+        return "-"
+    if isinstance(value, datetime):
+        return value.strftime("%b %d, %Y")
+
+    text = str(value)
+    for candidate in (text.replace("Z", "+00:00"), text):
+        try:
+            return datetime.fromisoformat(candidate).strftime("%b %d, %Y")
+        except ValueError:
+            continue
+
+    return text.split("T")[0]
+
+
+def _build_email_shell(title: str, greeting_name: str, intro_html: str, details_html: str = "", closing_html: str = "") -> str:
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:20px;">
+        <div style="background:#22c55e;padding:20px;text-align:center;">
+            <h1 style="color:#000;margin:0;">HH Jaba</h1>
+        </div>
+        <div style="padding:24px;background:#f9f9f9;">
+            <h2 style="color:#333;margin-top:0;">{title}</h2>
+            <p>Hi {html.escape(greeting_name or 'Customer')},</p>
+            {intro_html}
+            {details_html}
+            {closing_html}
+        </div>
+        <div style="padding:12px 10px;text-align:center;color:#666;font-size:12px;">
+            <p style="margin:0;">Happy Hour Jaba - 5DM Africa, Nairobi</p>
+            <p style="margin:6px 0 0 0;">contact@myhappyhour.co.ke</p>
+        </div>
+    </div>
+    """
+
+
+def _build_detail_grid(rows: List[tuple[str, str]]) -> str:
+    if not rows:
+        return ""
+
+    details = "".join(
+        f"""
+        <tr>
+            <td style='padding:10px 12px;border-bottom:1px solid #e5e7eb;color:#666;width:40%;'>{html.escape(label)}</td>
+            <td style='padding:10px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;'>{value}</td>
+        </tr>
+        """
+        for label, value in rows
+    )
+    return f"""
+    <div style="background:#fff;border:2px solid #000;margin:20px 0;">
+        <table style="width:100%;border-collapse:collapse;">{details}</table>
+    </div>
+    """
+
+
+def get_credit_invoice_html(invoice: dict) -> str:
+    line_items = invoice.get("line_items", []) or []
+    items_html = "".join(
+        f"""
+        <tr>
+            <td style='padding:10px;border-bottom:1px solid #ddd;'>{html.escape(str(item.get('flavor', 'Item')))}</td>
+            <td style='padding:10px;border-bottom:1px solid #ddd;text-align:center;'>{int(item.get('quantity', 0) or 0)}</td>
+            <td style='padding:10px;border-bottom:1px solid #ddd;text-align:right;'>{_format_email_currency(item.get('unit_price', 0))}</td>
+            <td style='padding:10px;border-bottom:1px solid #ddd;text-align:right;'>{_format_email_currency(item.get('line_total', 0))}</td>
+            <td style='padding:10px;border-bottom:1px solid #ddd;text-align:center;'>{html.escape(str(item.get('status', 'unpaid')).upper())}</td>
+        </tr>
+        """
+        for item in line_items
+    )
+
+    payment_method = invoice.get("payment_method") or "Airtel Money"
+    payment_number = invoice.get("payment_number") or "0733878020"
+    company_email = invoice.get("company_email") or "contact@myhappyhour.co.ke"
+    billing_period = f"{_format_email_date(invoice.get('billing_period_start'))} - {_format_email_date(invoice.get('billing_period_end'))}"
+
+    details_html = f"""
+    <div style="background:#fff;border:2px solid #000;margin:20px 0;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;">
+            <tr style="background:#22c55e;">
+                <th style="padding:10px;text-align:left;">Flavor</th>
+                <th style="padding:10px;text-align:center;">Qty</th>
+                <th style="padding:10px;text-align:right;">Unit Price</th>
+                <th style="padding:10px;text-align:right;">Amount</th>
+                <th style="padding:10px;text-align:center;">Status</th>
+            </tr>
+            {items_html}
+        </table>
+    </div>
+    """
+
+    summary_html = _build_detail_grid([
+        ("Invoice ID", html.escape(str(invoice.get("invoice_id", "-")))),
+        ("Billing Period", html.escape(billing_period)),
+        ("Invoice Status", html.escape(str(invoice.get("status", "unpaid")).upper())),
+        ("Total Amount", _format_email_currency(invoice.get("total_amount", 0))),
+        ("Payment Method", html.escape(str(payment_method))),
+        ("Payment Number", html.escape(str(payment_number))),
+    ])
+
+    return _build_email_shell(
+        "Invoice Ready",
+        invoice.get("customer_name") or "Customer",
+        f"""
+        <p>Your HH Jaba invoice is ready for payment.</p>
+        <p>Please use the details below when making your payment. If you have already paid, you can upload proof of payment from your invoices page.</p>
+        """,
+        details_html + summary_html,
+        f"""
+        <p><strong>Need help?</strong> Contact us via {html.escape(company_email)}.</p>
+        """
+    )
+
+
+async def send_credit_invoice_email(invoice: dict, recipient_email: Optional[str] = None, subject_prefix: str = "Invoice Ready"):
+    recipient = recipient_email or invoice.get("customer_email")
+    if not recipient:
+        logger.warning("Credit invoice %s has no recipient email; skipping invoice email", invoice.get("invoice_id"))
+        return None
+
+    subject = f"{subject_prefix} - HH Jaba {invoice.get('invoice_id', '')}".strip()
+    return await send_email(recipient, subject, get_credit_invoice_html(invoice))
+
+
+def get_transactional_update_html(recipient_name: str, title: str, intro_html: str, rows: Optional[List[tuple[str, str]]] = None, closing_html: str = "") -> str:
+    return _build_email_shell(title, recipient_name, intro_html, _build_detail_grid(rows or []), closing_html)
+
 def get_order_confirmation_html(order: dict, user: dict) -> str:
     """Generate order confirmation email HTML."""
     items_html = "".join([
@@ -681,15 +837,39 @@ async def google_callback(request: Request, code: str = None, error: str = None)
         logger.error(f"Google callback exception: {e}", exc_info=True)
         return RedirectResponse(url=frontend_error_url + "server_error", status_code=302)
 
+@api_router.get("/dev/users")
+async def get_dev_users():
+    """List current dev-auth login candidates when ENABLE_DEV_AUTH is enabled."""
+    if not ENABLE_DEV_AUTH:
+        raise HTTPException(status_code=404, detail="Dev auth is disabled")
+
+    users = await get_dev_auth_users()
+    approved_users = [user for user in users if await is_email_domain_approved(user.get("email", ""))]
+
+    return [
+        {
+            "user_id": user["user_id"],
+            "email": user["email"],
+            "name": user.get("name") or user["email"],
+            "role": user.get("role", "user"),
+        }
+        for user in approved_users
+    ]
+
 @api_router.get("/dev/login")
-async def dev_login(email: str):
+async def dev_login(email: Optional[str] = None):
     """Create a local dev session without OAuth when ENABLE_DEV_AUTH is enabled."""
     if not ENABLE_DEV_AUTH:
         raise HTTPException(status_code=404, detail="Dev auth is disabled")
 
     normalized_email = (email or '').strip().lower()
     if not normalized_email:
-        raise HTTPException(status_code=400, detail="Email is required")
+        dev_users = await get_dev_auth_users()
+        approved_users = [user for user in dev_users if await is_email_domain_approved(user.get("email", ""))]
+        if not approved_users:
+            raise HTTPException(status_code=404, detail="No dev users available. Seed local data first.")
+        normalized_email = approved_users[0]["email"]
+
     if not await is_email_domain_approved(normalized_email):
         raise HTTPException(status_code=403, detail="Unauthorized domain")
 
@@ -768,6 +948,24 @@ async def get_all_products(request: Request):
     """Get all products (admin only)."""
     await get_admin_user(request)
     return await db_fetchall("SELECT * FROM products ORDER BY name")
+
+
+@api_router.get("/admin/stock-entries")
+async def get_stock_entries(request: Request, product_id: Optional[str] = None, limit: int = 200):
+    """Get stock addition history entries (admin only)."""
+    await get_admin_user(request)
+
+    safe_limit = max(1, min(limit, 1000))
+    if product_id:
+        return await db_fetchall(
+            "SELECT * FROM stock_entries WHERE product_id=%s ORDER BY created_at DESC LIMIT %s",
+            (product_id, safe_limit)
+        )
+
+    return await db_fetchall(
+        "SELECT * FROM stock_entries ORDER BY created_at DESC LIMIT %s",
+        (safe_limit,)
+    )
 
 @api_router.put("/products/{product_id}/stock")
 async def update_stock(product_id: str, stock_update: StockUpdate, request: Request):
@@ -1114,6 +1312,28 @@ async def cancel_order(order_id: str, cancellation: OrderCancellation, request: 
         )
     )
 
+    user = await db_fetchone("SELECT * FROM users WHERE user_id=%s", (order["user_id"],))
+    if user and user.get("email"):
+        await send_email(
+            user["email"],
+            f"Order Cancelled - HH Jaba #{order_id}",
+            get_transactional_update_html(
+                user.get("name", "Customer"),
+                "Order Cancelled",
+                f"""
+                <p>Your order <strong>#{html.escape(order_id)}</strong> has been cancelled.</p>
+                <p>The reason provided by the admin team is shown below.</p>
+                """,
+                [
+                    ("Order ID", html.escape(order_id)),
+                    ("Payment Method", html.escape(str(order.get("payment_method", "")).upper())),
+                    ("Order Total", _format_email_currency(order.get("total_amount", 0))),
+                    ("Cancellation Reason", html.escape(cancellation.reason)),
+                ],
+                "<p>If you need help with a replacement order, reply to this email or contact support.</p>"
+            )
+        )
+
     return {"message": "Order cancelled", "reason": cancellation.reason}
 
 @api_router.post("/admin/orders/{order_id}/reject")
@@ -1141,6 +1361,41 @@ async def reject_order(order_id: str, request: Request):
         "UPDATE orders SET status='cancelled', verification_status='rejected', updated_at=%s WHERE order_id=%s",
         (_now(), order_id)
     )
+
+    now = _now()
+    await db_execute(
+        """INSERT INTO notifications
+           (notification_id, user_id, title, message, notification_type, `read`, created_at)
+           VALUES (%s,%s,%s,%s,'order',0,%s)""",
+        (
+            f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            order["user_id"],
+            "Order Rejected",
+            f"Your order #{order_id} was rejected after review. Any held inventory and credit have been released.",
+            now
+        )
+    )
+
+    user = await db_fetchone("SELECT * FROM users WHERE user_id=%s", (order["user_id"],))
+    if user and user.get("email"):
+        await send_email(
+            user["email"],
+            f"Order Rejected - HH Jaba #{order_id}",
+            get_transactional_update_html(
+                user.get("name", "Customer"),
+                "Order Rejected",
+                f"""
+                <p>Your order <strong>#{html.escape(order_id)}</strong> was rejected after review.</p>
+                <p>Any reserved credit or stock has been released back to your account.</p>
+                """,
+                [
+                    ("Order ID", html.escape(order_id)),
+                    ("Payment Method", html.escape(str(order.get("payment_method", "")).upper())),
+                    ("Order Total", _format_email_currency(order.get("total_amount", 0))),
+                ],
+                "<p>Please submit a new order if you still need stock, or contact support if this looks incorrect.</p>"
+            )
+        )
 
     return {"message": "Order rejected and refunded"}
 
@@ -1577,7 +1832,25 @@ async def create_credit_invoice(invoice_data: CreditInvoiceCreate, request: Requ
         )
     )
 
-    return await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+    created_invoice = await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+
+    await db_execute(
+        """INSERT INTO notifications
+           (notification_id, user_id, title, message, notification_type, `read`, created_at, metadata)
+           VALUES (%s,%s,%s,%s,'invoice',0,%s,%s)""",
+        (
+            f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            invoice_data.user_id,
+            "Invoice Ready",
+            f"Invoice {invoice_id} has been issued for {_format_email_currency(subtotal)}.",
+            now,
+            _serialize({"invoice_id": invoice_id, "total_amount": subtotal, "status": created_invoice.get("status", "unpaid")})
+        )
+    )
+
+    email_sent = bool(await send_credit_invoice_email(created_invoice))
+    created_invoice["email_sent"] = email_sent
+    return created_invoice
 
 @api_router.get("/admin/credit-invoices")
 async def get_credit_invoices(request: Request, user_id: Optional[str] = None):
@@ -1599,6 +1872,26 @@ async def get_credit_invoice(invoice_id: str, request: Request):
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice
+
+
+@api_router.post("/admin/credit-invoices/{invoice_id}/send-email")
+async def send_credit_invoice_email_admin(invoice_id: str, request: Request):
+    """Send or resend a credit invoice email (admin only)."""
+    await get_admin_user(request)
+
+    invoice = await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    email_response = await send_credit_invoice_email(invoice, subject_prefix="Invoice Resent")
+    if not email_response:
+        raise HTTPException(status_code=502, detail="Failed to send invoice email")
+
+    return {
+        "message": f"Invoice sent to {invoice.get('customer_email')}",
+        "invoice_id": invoice_id,
+        "recipient": invoice.get("customer_email")
+    }
 
 @api_router.put("/admin/credit-invoices/{invoice_id}/status")
 async def update_credit_invoice_status(invoice_id: str, request: Request):
@@ -1761,7 +2054,23 @@ async def auto_generate_invoice(user_id: str, request: Request):
         )
     )
 
-    return await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+    await db_execute(
+        """INSERT INTO notifications
+           (notification_id, user_id, title, message, notification_type, `read`, created_at, metadata)
+           VALUES (%s,%s,%s,%s,'invoice',0,%s,%s)""",
+        (
+            f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+            user_id,
+            "Invoice Ready",
+            f"Invoice {invoice_id} has been auto-generated for {_format_email_currency(total_amount)}.",
+            now,
+            _serialize({"invoice_id": invoice_id, "total_amount": total_amount, "auto_generated": True})
+        )
+    )
+
+    created_invoice = await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+    created_invoice["email_sent"] = bool(await send_credit_invoice_email(created_invoice, subject_prefix="Invoice Ready"))
+    return created_invoice
 
 
 # ===== FEEDBACK & NOTIFICATIONS =====
@@ -1796,8 +2105,13 @@ async def create_notification(notification: NotificationCreate, request: Request
     notification_id = f"NOTIF-{uuid.uuid4().hex[:8].upper()}"
     now = _now()
 
+    recipients = []
+
     if notification.target_users:
         for uid in notification.target_users:
+            recipient = await db_fetchone("SELECT user_id, email, name FROM users WHERE user_id=%s", (uid,))
+            if recipient:
+                recipients.append(recipient)
             await db_execute(
                 """INSERT INTO notifications
                    (notification_id, user_id, title, message, notification_type, `read`, created_at, created_by)
@@ -1806,14 +2120,28 @@ async def create_notification(notification: NotificationCreate, request: Request
                  notification.notification_type, now, admin.get("name", admin.get("email")))
             )
     else:
-        users = await db_fetchall("SELECT user_id FROM users WHERE role='user'")
-        for u in users:
+        recipients = await db_fetchall("SELECT user_id, email, name FROM users WHERE role='user'")
+        for u in recipients:
             await db_execute(
                 """INSERT INTO notifications
                    (notification_id, user_id, title, message, notification_type, `read`, created_at, created_by)
                    VALUES (%s,%s,%s,%s,%s,0,%s,%s)""",
                 (notification_id, u["user_id"], notification.title, notification.message,
                  notification.notification_type, now, admin.get("name", admin.get("email")))
+            )
+
+    for recipient in recipients:
+        if recipient.get("email"):
+            await send_email(
+                recipient["email"],
+                f"{notification.title} - HH Jaba",
+                get_transactional_update_html(
+                    recipient.get("name", "Customer"),
+                    notification.title,
+                    f"<p>{html.escape(notification.message)}</p>",
+                    [("Notification Type", html.escape(notification.notification_type.upper()))],
+                    "<p>You can also view this update inside your HH Jaba account.</p>"
+                )
             )
 
     return {"message": "Notification created", "notification_id": notification_id}
@@ -1897,6 +2225,30 @@ async def get_user_invoices(request: Request):
     )
 
 
+@api_router.post("/users/invoices/{invoice_id}/send-email")
+async def resend_user_invoice_email(invoice_id: str, request: Request):
+    """Send or resend the current user's invoice email."""
+    user = await get_current_user(request)
+
+    invoice = await db_fetchone(
+        "SELECT * FROM credit_invoices WHERE invoice_id=%s AND user_id=%s",
+        (invoice_id, user["user_id"])
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    recipient_email = invoice.get("customer_email") or user.get("email")
+    email_response = await send_credit_invoice_email(invoice, recipient_email=recipient_email, subject_prefix="Invoice Copy")
+    if not email_response:
+        raise HTTPException(status_code=502, detail="Failed to send invoice email")
+
+    return {
+        "message": f"Invoice sent to {recipient_email}",
+        "invoice_id": invoice_id,
+        "recipient": recipient_email
+    }
+
+
 # ===== POP (PROOF OF PAYMENT) ROUTES =====
 
 @api_router.post("/payments/submit-pop")
@@ -1940,6 +2292,27 @@ async def submit_pop(pop_data: POPSubmission, request: Request):
                 "Payment Proof Submitted",
                 f"{user.get('name')} submitted POP for Invoice {pop_data.invoice_id}: KES {pop_data.amount_paid:,.0f} ({pop_data.payment_type})",
                 now
+            )
+        )
+
+    if user.get("email"):
+        await send_email(
+            user["email"],
+            f"Payment Proof Received - HH Jaba {pop_data.invoice_id}",
+            get_transactional_update_html(
+                user.get("name", "Customer"),
+                "Payment Proof Received",
+                f"""
+                <p>We have received your proof of payment for invoice <strong>{html.escape(pop_data.invoice_id)}</strong>.</p>
+                <p>The HH Jaba team will verify the transaction and notify you once the review is complete.</p>
+                """,
+                [
+                    ("Invoice ID", html.escape(pop_data.invoice_id)),
+                    ("Transaction Code", html.escape(pop_data.transaction_code.upper())),
+                    ("Amount Submitted", _format_email_currency(pop_data.amount_paid)),
+                    ("Payment Type", html.escape(pop_data.payment_type.replace("_", " ").title())),
+                ],
+                "<p>Please keep the original transaction confirmation until verification is complete.</p>"
             )
         )
 
@@ -2042,6 +2415,27 @@ async def match_transaction(pop_id: str, match_data: TransactionMatch, request: 
                 pop_id, now
             )
         )
+
+        if pop.get("user_email"):
+            await send_email(
+                pop["user_email"],
+                f"Payment Verification Failed - HH Jaba {pop['invoice_id']}",
+                get_transactional_update_html(
+                    pop.get("user_name", "Customer"),
+                    "Payment Verification Failed",
+                    f"""
+                    <p>Your payment submission for invoice <strong>{html.escape(pop['invoice_id'])}</strong> could not be verified automatically.</p>
+                    <p>Please review the mismatch details below and raise a dispute in the portal if needed.</p>
+                    """,
+                    [
+                        ("Invoice ID", html.escape(pop["invoice_id"])),
+                        ("POP ID", html.escape(pop_id)),
+                        ("Submitted Amount", _format_email_currency(pop.get("amount_paid", 0))),
+                        ("Verification Reason", html.escape(decline_reason)),
+                    ],
+                    "<p>You can submit additional evidence through the dispute chat linked to this payment proof.</p>"
+                )
+            )
         return {"status": "verification_failed", "message": decline_reason}
 
 @api_router.post("/admin/payments/{pop_id}/force-approve")
@@ -2080,7 +2474,7 @@ async def force_approve_payment(pop_id: str, approval: ForceApproval, request: R
         (verified_amount, now, admin_name, approval.reason, _serialize(audit_entry), pop_id)
     )
 
-    await _apply_approved_payment(pop, verified_amount)
+    await _apply_approved_payment(pop, verified_amount, approval.reason)
     return {"message": f"Payment force-approved by {admin_name}. Reason: {approval.reason}", "pop_id": pop_id}
 
 @api_router.post("/admin/payments/{pop_id}/reject")
@@ -2123,9 +2517,30 @@ async def reject_payment_direct(pop_id: str, verification: PaymentVerification, 
         )
     )
 
+    if pop.get("user_email"):
+        rejection_reason = verification.reason or "Not specified"
+        await send_email(
+            pop["user_email"],
+            f"Payment Rejected - HH Jaba {pop['invoice_id']}",
+            get_transactional_update_html(
+                pop.get("user_name", "Customer"),
+                "Payment Rejected",
+                f"""
+                <p>Your payment submission for invoice <strong>{html.escape(pop['invoice_id'])}</strong> has been rejected.</p>
+                <p>Please review the rejection reason below and submit a new proof of payment.</p>
+                """,
+                [
+                    ("Invoice ID", html.escape(pop["invoice_id"])),
+                    ("POP ID", html.escape(pop_id)),
+                    ("Rejected Amount", _format_email_currency(pop.get("amount_paid", 0))),
+                    ("Reason", html.escape(rejection_reason)),
+                ]
+            )
+        )
+
     return {"message": "Payment rejected", "pop_id": pop_id}
 
-async def _apply_approved_payment(pop: dict, verified_amount: float):
+async def _apply_approved_payment(pop: dict, verified_amount: float, approval_note: Optional[str] = None):
     """Helper: Update invoice status and restore credit after payment approval."""
     invoice = await db_fetchone(
         "SELECT * FROM credit_invoices WHERE invoice_id=%s", (pop["invoice_id"],)
@@ -2162,6 +2577,31 @@ async def _apply_approved_payment(pop: dict, verified_amount: float):
             _now()
         )
     )
+
+    if pop.get("user_email"):
+        detail_rows = [
+            ("Invoice ID", html.escape(pop["invoice_id"])),
+            ("POP ID", html.escape(pop["pop_id"])),
+            ("Approved Amount", _format_email_currency(verified_amount)),
+            ("Balance Owed", _format_email_currency(max(0, remaining))),
+        ]
+        if approval_note:
+            detail_rows.append(("Approval Note", html.escape(approval_note)))
+
+        await send_email(
+            pop["user_email"],
+            f"Payment Approved - HH Jaba {pop['invoice_id']}",
+            get_transactional_update_html(
+                pop.get("user_name", "Customer"),
+                "Payment Approved",
+                f"""
+                <p>Your payment for invoice <strong>{html.escape(pop['invoice_id'])}</strong> has been approved.</p>
+                <p>Your available credit has been updated accordingly.</p>
+                """,
+                detail_rows,
+                "<p>If you still have an outstanding balance, please clear it before the next billing cycle.</p>"
+            )
+        )
 
 
 # ===== DISPUTE CHAT ROUTES =====
@@ -2280,12 +2720,13 @@ async def get_all_disputes(request: Request):
     return result
 
 
-# ===== BACKLOG CREDIT ENTRY =====
+# ===== STARTING CREDIT IMPORT =====
 
-@api_router.post("/admin/backlog-credit")
-async def create_backlog_credit(entry: BacklogCreditEntry, request: Request):
-    """Admin creates a manual backlog credit entry for a user."""
+async def _create_starting_credit_entry(entry: StartingCreditEntry, request: Request):
     admin = await get_admin_user(request)
+
+    if entry.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
 
     user = await db_fetchone("SELECT * FROM users WHERE user_id=%s", (entry.user_id,))
     if not user:
@@ -2299,7 +2740,13 @@ async def create_backlog_credit(entry: BacklogCreditEntry, request: Request):
     date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
     invoice_id = f"HHJ-INV-{date_str}-{uuid.uuid4().hex[:5].upper()}"
     now = _now()
-    line_items = [{"flavor": "Backlog Credit", "quantity": 1, "unit_price": entry.amount, "line_total": entry.amount, "status": "unpaid"}]
+    line_items = [{
+        "flavor": "Starting Credit",
+        "quantity": 1,
+        "unit_price": entry.amount,
+        "line_total": entry.amount,
+        "status": "unpaid"
+    }]
 
     await db_execute(
         """INSERT INTO credit_invoices
@@ -2314,13 +2761,42 @@ async def create_backlog_credit(entry: BacklogCreditEntry, request: Request):
             entry.billing_period_start or datetime.now(timezone.utc).replace(day=1).strftime('%Y-%m-%d'),
             entry.billing_period_end or datetime.now(timezone.utc).strftime('%Y-%m-%d'),
             _serialize(line_items), entry.amount, entry.amount,
-            f"Backlog entry: {entry.description}",
+            f"Starting credit import: {entry.description}",
             now, admin.get("name", admin.get("email", "Admin")),
             "contact@myhappyhour.co.ke", "Airtel Money", "0733878020"
         )
     )
 
-    return {"invoice_id": invoice_id, "message": f"Backlog credit of KES {entry.amount:,.0f} added for {user.get('name')}"}
+    await create_admin_audit_log(
+        admin,
+        action="add_starting_credit",
+        target_type="user",
+        target_id=entry.user_id,
+        details={
+            "invoice_id": invoice_id,
+            "amount": entry.amount,
+            "description": entry.description,
+            "billing_period_start": entry.billing_period_start,
+            "billing_period_end": entry.billing_period_end,
+        },
+    )
+
+    return {
+        "invoice_id": invoice_id,
+        "message": f"Starting credit of KES {entry.amount:,.0f} added for {user.get('name')}"
+    }
+
+
+@api_router.post("/admin/starting-credit")
+async def create_starting_credit(entry: StartingCreditEntry, request: Request):
+    """Admin or super admin imports a user's legacy starting credit usage."""
+    return await _create_starting_credit_entry(entry, request)
+
+
+@api_router.post("/admin/backlog-credit")
+async def create_backlog_credit(entry: BacklogCreditEntry, request: Request):
+    """Backward-compatible route for historical clients; maps to starting credit import."""
+    return await _create_starting_credit_entry(entry, request)
 
 
 # ===== DEFAULTER WARNING TEMPLATES =====

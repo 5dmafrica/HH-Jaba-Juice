@@ -41,6 +41,12 @@ const AdminDashboard = () => {
   
   // Stock State
   const [products, setProducts] = useState([]);
+  const [stockEntries, setStockEntries] = useState([]);
+  const [stockLedgerProductFilter, setStockLedgerProductFilter] = useState('all');
+  const [stockLedgerBatchFilter, setStockLedgerBatchFilter] = useState('');
+  const [stockLedgerFromDate, setStockLedgerFromDate] = useState('');
+  const [stockLedgerToDate, setStockLedgerToDate] = useState('');
+  const [stockLedgerRowLimit, setStockLedgerRowLimit] = useState('100');
   const [editingStock, setEditingStock] = useState(null);
   const [newStockValue, setNewStockValue] = useState(0);
   const [manufacturingDate, setManufacturingDate] = useState('');
@@ -92,7 +98,7 @@ const AdminDashboard = () => {
   const [newDisputeMsg, setNewDisputeMsg] = useState('');
   const [showDisputeChat, setShowDisputeChat] = useState(false);
   
-  // Backlog Credit Entry State
+  // Starting Credit Import State
   const [showBacklogDialog, setShowBacklogDialog] = useState(false);
   const [backlogUserId, setBacklogUserId] = useState('');
   const [backlogAmount, setBacklogAmount] = useState('');
@@ -210,6 +216,7 @@ const AdminDashboard = () => {
       const requests = [
         fetchPendingOrders(),
         fetchProducts(),
+        fetchStockEntries(),
         fetchReconciliation(),
         fetchDefaulters(),
         fetchPendingPayments(),
@@ -243,6 +250,85 @@ const AdminDashboard = () => {
     } catch (error) {
       console.error('Failed to fetch products');
     }
+  };
+
+  const fetchStockEntries = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/stock-entries?limit=500`, { withCredentials: true });
+      setStockEntries(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch stock entries');
+    }
+  };
+
+  const getFilteredStockLedgerEntries = () => {
+    const fromDate = stockLedgerFromDate ? new Date(`${stockLedgerFromDate}T00:00:00`) : null;
+    const toDate = stockLedgerToDate ? new Date(`${stockLedgerToDate}T23:59:59`) : null;
+    const batchQuery = stockLedgerBatchFilter.trim().toLowerCase();
+
+    return stockEntries.filter((entry) => {
+      if (stockLedgerProductFilter !== 'all' && String(entry.product_id) !== stockLedgerProductFilter) {
+        return false;
+      }
+
+      if (batchQuery) {
+        const batchValue = (entry.batch_id || '').toLowerCase();
+        const productValue = (entry.product_name || '').toLowerCase();
+        if (!batchValue.includes(batchQuery) && !productValue.includes(batchQuery)) {
+          return false;
+        }
+      }
+
+      if (fromDate || toDate) {
+        const entryDate = entry.created_at ? new Date(entry.created_at) : null;
+        if (!entryDate || Number.isNaN(entryDate.getTime())) {
+          return false;
+        }
+        if (fromDate && entryDate < fromDate) {
+          return false;
+        }
+        if (toDate && entryDate > toDate) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  };
+
+  const exportStockLedgerCsv = () => {
+    const filteredEntries = getFilteredStockLedgerEntries();
+    if (filteredEntries.length === 0) {
+      toast.error('No stock ledger rows to export');
+      return;
+    }
+
+    const rows = [
+      ['Entry ID', 'Product', 'Product ID', 'Quantity Added', 'Batch ID', 'Manufacturing Date', 'Created At'],
+      ...filteredEntries.map((entry) => [
+        entry.entry_id,
+        entry.product_name || '',
+        entry.product_id,
+        entry.quantity_added,
+        entry.batch_id || '',
+        entry.manufacturing_date || '',
+        entry.created_at || ''
+      ])
+    ];
+
+    const escapeCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csvContent = rows.map((row) => row.map(escapeCell).join(',')).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = format(new Date(), 'yyyyMMdd-HHmmss');
+    link.href = url;
+    link.download = `stock-ledger-${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const fetchReconciliation = async (search = '') => {
@@ -360,6 +446,7 @@ const AdminDashboard = () => {
       setManufacturingDate('');
       setBatchId('');
       fetchProducts();
+      fetchStockEntries();
     } catch (error) {
       toast.error('Failed to update stock');
     }
@@ -629,12 +716,12 @@ const AdminDashboard = () => {
       return;
     }
     try {
-      await axios.post(`${API}/admin/backlog-credit`, {
+      await axios.post(`${API}/admin/starting-credit`, {
         user_id: backlogUserId,
         amount: parseFloat(backlogAmount),
         description: backlogDescription
       }, { withCredentials: true });
-      toast.success('Backlog credit entry added');
+      toast.success('Starting credit imported');
       setShowBacklogDialog(false);
       setBacklogUserId('');
       setBacklogAmount('');
@@ -642,7 +729,7 @@ const AdminDashboard = () => {
       fetchReconciliation();
       fetchDefaulters();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to add backlog credit');
+      toast.error(error.response?.data?.detail || 'Failed to import starting credit');
     }
   };
 
@@ -1156,6 +1243,24 @@ const AdminDashboard = () => {
                             Last: {product.last_batch_id} ({product.last_manufacturing_date})
                           </p>
                         )}
+                        {stockEntries.filter((entry) => entry.product_id === product.product_id).length > 0 && (
+                          <div className="text-xs text-gray-600 bg-gray-50 border rounded p-2 space-y-1">
+                            <p className="font-bold uppercase tracking-wide">Recent Stock Entries</p>
+                            {stockEntries
+                              .filter((entry) => entry.product_id === product.product_id)
+                              .slice(0, 3)
+                              .map((entry) => (
+                                <div key={entry.entry_id} className="flex justify-between gap-2">
+                                  <span>
+                                    +{entry.quantity_added} ({entry.batch_id || 'no-batch'})
+                                  </span>
+                                  <span className="text-gray-500">
+                                    {entry.created_at ? format(new Date(entry.created_at), 'MMM dd, HH:mm') : ''}
+                                  </span>
+                                </div>
+                              ))}
+                          </div>
+                        )}
                         <div className="flex gap-2">
                           <Button
                             data-testid={`edit-stock-${product.product_id}`}
@@ -1184,6 +1289,156 @@ const AdminDashboard = () => {
                     )}
                   </div>
                 ))}
+              </div>
+
+              <div className="p-4 border-2 border-black rounded-lg shadow-brutal-sm bg-white space-y-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <h3 className="font-display text-lg uppercase">Stock Ledger</h3>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={fetchStockEntries}
+                      className="border-2 border-black"
+                    >
+                      <RefreshCw className="w-4 h-4 mr-1" />
+                      Refresh
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={exportStockLedgerCsv}
+                      className="bg-black text-white hover:bg-gray-800"
+                    >
+                      Export CSV
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+                  <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide">Product</Label>
+                    <Select value={stockLedgerProductFilter} onValueChange={setStockLedgerProductFilter}>
+                      <SelectTrigger className="border-2 border-black">
+                        <SelectValue placeholder="All products" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All products</SelectItem>
+                        {products.map((product) => (
+                          <SelectItem key={`ledger-product-${product.product_id}`} value={String(product.product_id)}>
+                            {product.name.replace('Happy Hour Jaba - ', '')}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide">Batch/Product Search</Label>
+                    <Input
+                      value={stockLedgerBatchFilter}
+                      onChange={(e) => setStockLedgerBatchFilter(e.target.value)}
+                      placeholder="batch id or name"
+                      className="border-2 border-black"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide">From</Label>
+                    <Input
+                      type="date"
+                      value={stockLedgerFromDate}
+                      onChange={(e) => setStockLedgerFromDate(e.target.value)}
+                      className="border-2 border-black"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide">To</Label>
+                    <Input
+                      type="date"
+                      value={stockLedgerToDate}
+                      onChange={(e) => setStockLedgerToDate(e.target.value)}
+                      className="border-2 border-black"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs uppercase tracking-wide">Rows</Label>
+                    <Select value={stockLedgerRowLimit} onValueChange={setStockLedgerRowLimit}>
+                      <SelectTrigger className="border-2 border-black">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                        <SelectItem value="200">200</SelectItem>
+                        <SelectItem value="500">500</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {(() => {
+                  const filteredEntries = getFilteredStockLedgerEntries();
+                  const visibleEntries = filteredEntries.slice(0, parseInt(stockLedgerRowLimit, 10));
+                  const totalUnitsAdded = filteredEntries.reduce((sum, entry) => sum + (Number(entry.quantity_added) || 0), 0);
+                  const uniqueBatches = new Set(filteredEntries.map((entry) => entry.batch_id).filter(Boolean)).size;
+
+                  return (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="p-3 border rounded bg-gray-50">
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Filtered Entries</p>
+                          <p className="font-display text-xl font-bold">{filteredEntries.length}</p>
+                        </div>
+                        <div className="p-3 border rounded bg-gray-50">
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Units Added</p>
+                          <p className="font-display text-xl font-bold">{totalUnitsAdded}</p>
+                        </div>
+                        <div className="p-3 border rounded bg-gray-50">
+                          <p className="text-xs text-gray-500 uppercase tracking-wide">Unique Batches</p>
+                          <p className="font-display text-xl font-bold">{uniqueBatches}</p>
+                        </div>
+                      </div>
+
+                      {visibleEntries.length === 0 ? (
+                        <div className="text-sm text-gray-500 p-4 border border-dashed rounded">
+                          No stock ledger rows match current filters.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto border-2 border-black rounded-lg">
+                          <table className="w-full text-sm">
+                            <thead className="bg-black text-hh-green">
+                              <tr>
+                                <th className="p-2 text-left font-display uppercase text-xs">Timestamp</th>
+                                <th className="p-2 text-left font-display uppercase text-xs">Product</th>
+                                <th className="p-2 text-left font-display uppercase text-xs">Qty Added</th>
+                                <th className="p-2 text-left font-display uppercase text-xs">Batch ID</th>
+                                <th className="p-2 text-left font-display uppercase text-xs">MFG Date</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visibleEntries.map((entry) => (
+                                <tr key={entry.entry_id} className="border-t bg-white">
+                                  <td className="p-2 text-xs">
+                                    {entry.created_at ? format(new Date(entry.created_at), 'yyyy-MM-dd HH:mm') : 'N/A'}
+                                  </td>
+                                  <td className="p-2">
+                                    <div className="font-medium">{(entry.product_name || '').replace('Happy Hour Jaba - ', '')}</div>
+                                    <div className="text-xs text-gray-500">ID: {entry.product_id}</div>
+                                  </td>
+                                  <td className="p-2 font-bold text-hh-green">+{entry.quantity_added}</td>
+                                  <td className="p-2">{entry.batch_id || 'N/A'}</td>
+                                  <td className="p-2">{entry.manufacturing_date || 'N/A'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </TabsContent>
 
@@ -1375,7 +1630,7 @@ const AdminDashboard = () => {
                     className="bg-hh-green text-black border-2 border-black shadow-brutal-sm text-xs"
                   >
                     <Plus className="w-3 h-3 mr-1" />
-                    Backlog Entry
+                    Starting Credit
                   </Button>
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -2174,15 +2429,15 @@ const AdminDashboard = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Backlog Credit Entry Dialog */}
+      {/* Starting Credit Import Dialog */}
       <Dialog open={showBacklogDialog} onOpenChange={(open) => {
         setShowBacklogDialog(open);
         if (!open) { setBacklogUserId(''); setBacklogAmount(''); setBacklogDescription(''); }
       }}>
         <DialogContent className="max-w-md border-2 border-black shadow-brutal-lg">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl uppercase">Add Backlog Credit</DialogTitle>
-            <DialogDescription>Manually add a historical credit entry for a customer</DialogDescription>
+            <DialogTitle className="font-display text-xl uppercase">Import Starting Credit</DialogTitle>
+            <DialogDescription>Add a legacy opening credit usage amount so tracking is accurate going forward</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -2201,7 +2456,7 @@ const AdminDashboard = () => {
               </Select>
             </div>
             <div>
-              <Label className="font-display uppercase text-sm">Amount (KES) *</Label>
+              <Label className="font-display uppercase text-sm">Starting Usage Amount (KES) *</Label>
               <Input
                 data-testid="backlog-amount"
                 type="number"
@@ -2212,13 +2467,13 @@ const AdminDashboard = () => {
               />
             </div>
             <div>
-              <Label className="font-display uppercase text-sm">Description *</Label>
+              <Label className="font-display uppercase text-sm">Legacy Notes *</Label>
               <Textarea
                 data-testid="backlog-description"
                 value={backlogDescription}
                 onChange={(e) => setBacklogDescription(e.target.value)}
                 className="border-2 border-black"
-                placeholder="e.g. Outstanding balance from February 2026"
+                placeholder="e.g. Imported from offline ledger up to February 2026"
               />
             </div>
             <Button
@@ -2226,7 +2481,7 @@ const AdminDashboard = () => {
               onClick={submitBacklogCredit}
               className="w-full h-12 bg-hh-green text-black border-2 border-black shadow-brutal"
             >
-              Add Backlog Entry
+              Import Starting Credit
             </Button>
           </div>
         </DialogContent>

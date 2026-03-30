@@ -2,8 +2,8 @@
 -- Run this in phpMyAdmin or MySQL console before starting the server
 -- Connection: localhost, user: root, no password, database: hhjaba
 
---CREATE DATABASE IF NOT EXISTS hhjaba CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
---USE hhjaba;
+-- CREATE DATABASE IF NOT EXISTS hhjaba CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- USE hhjaba;
 
 -- 1. Users
 CREATE TABLE IF NOT EXISTS users (

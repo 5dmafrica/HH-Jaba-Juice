@@ -1,14 +1,51 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useLocation } from 'react-router-dom';
+import axios from 'axios';
 import { Button } from '../components/ui/button';
 import { Beer, ArrowRight, AlertCircle } from 'lucide-react';
 import { Alert, AlertDescription } from '../components/ui/alert';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
+const ENABLE_DEV_AUTH = process.env.REACT_APP_ENABLE_DEV_AUTH === 'true';
 
 const Landing = () => {
   const { login } = useAuth();
   const location = useLocation();
   const errorMessage = location.state?.error;
+  const [devUsers, setDevUsers] = useState([]);
+  const [devUsersLoading, setDevUsersLoading] = useState(false);
+
+  useEffect(() => {
+    if (!ENABLE_DEV_AUTH) {
+      return;
+    }
+
+    const fetchDevUsers = async () => {
+      setDevUsersLoading(true);
+      try {
+        const response = await axios.get(`${API}/dev/users`);
+        setDevUsers(response.data || []);
+      } catch (error) {
+        setDevUsers([]);
+      } finally {
+        setDevUsersLoading(false);
+      }
+    };
+
+    fetchDevUsers();
+  }, []);
+
+  const getDevUserLabel = (devUser) => {
+    if (devUser.role === 'super_admin') return 'Local Super Admin';
+    if (devUser.role === 'admin') return 'Local Admin';
+    return 'Local Customer';
+  };
+
+  const loginAsDevUser = (email) => {
+    window.location.href = `${BACKEND_URL}/api/dev/login?email=${encodeURIComponent(email)}`;
+  };
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -94,9 +131,35 @@ const Landing = () => {
             onClick={login}
             className="w-full h-14 bg-hh-green text-black hover:bg-green-600 text-lg font-display uppercase tracking-wide border-2 border-black shadow-brutal btn-brutal transition-all"
           >
-            Sign in with Google
+            {ENABLE_DEV_AUTH ? 'Enter Local Demo' : 'Sign in with Google'}
             <ArrowRight className="ml-2 w-5 h-5" />
           </Button>
+
+          {ENABLE_DEV_AUTH && (
+            <div className="mt-4 p-4 border-2 border-black rounded-lg bg-gray-50 space-y-3">
+              <p className="text-xs font-display uppercase tracking-wide text-black">Local Dev Sign-In</p>
+              {devUsersLoading ? (
+                <p className="text-xs text-gray-500">Loading local users...</p>
+              ) : devUsers.length > 0 ? (
+                <div className="grid gap-2">
+                  {devUsers.map((devUser) => (
+                  <Button
+                    key={devUser.email}
+                    data-testid={`dev-login-${devUser.email}`}
+                    variant="outline"
+                    onClick={() => loginAsDevUser(devUser.email)}
+                    className="w-full border-2 border-black justify-between font-display uppercase text-xs"
+                  >
+                    {getDevUserLabel(devUser)}
+                    <span className="normal-case text-[10px]">{devUser.email}</span>
+                  </Button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No local users available. Seed local data first.</p>
+              )}
+            </div>
+          )}
 
           <p className="text-center text-sm text-gray-500 mt-4">
             Only @5dm.africa emails allowed

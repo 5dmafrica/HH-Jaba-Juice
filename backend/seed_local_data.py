@@ -39,11 +39,48 @@ PRODUCTS = [
 ]
 
 USERS = [
-    ('user_local_super_admin', 'mavin@5dm.africa', 'Mavin Local', '0711000001', 30000.0, 'super_admin'),
-    ('user_local_admin', 'ops.admin@5dm.africa', 'Ops Admin', '0711000002', 30000.0, 'admin'),
-    ('user_local_customer_1', 'buyer.one@5dm.africa', 'Buyer One', '0711000003', 23500.0, 'user'),
-    ('user_local_customer_2', 'buyer.two@5dm.africa', 'Buyer Two', '0711000004', 28500.0, 'user'),
+    {
+        'key': 'super_admin',
+        'user_id': 'user_local_super_admin',
+        'email': os.environ.get('LOCAL_SUPER_ADMIN_EMAIL', 'mavin@5dm.africa'),
+        'name': os.environ.get('LOCAL_SUPER_ADMIN_NAME', 'Mavin Local'),
+        'phone': os.environ.get('LOCAL_SUPER_ADMIN_PHONE', '0711000001'),
+        'credit_balance': 30000.0,
+        'role': 'super_admin',
+    },
+    {
+        'key': 'admin',
+        'user_id': 'user_local_admin',
+        'email': os.environ.get('LOCAL_ADMIN_EMAIL', 'ops.admin@5dm.africa'),
+        'name': os.environ.get('LOCAL_ADMIN_NAME', 'Ops Admin'),
+        'phone': os.environ.get('LOCAL_ADMIN_PHONE', '0711000002'),
+        'credit_balance': 30000.0,
+        'role': 'admin',
+    },
+    {
+        'key': 'customer_primary',
+        'user_id': 'user_local_customer_1',
+        'email': os.environ.get('LOCAL_CUSTOMER_PRIMARY_EMAIL', 'buyer.one@5dm.africa'),
+        'name': os.environ.get('LOCAL_CUSTOMER_PRIMARY_NAME', 'Buyer One'),
+        'phone': os.environ.get('LOCAL_CUSTOMER_PRIMARY_PHONE', '0711000003'),
+        'credit_balance': 23500.0,
+        'role': 'user',
+    },
+    {
+        'key': 'customer_secondary',
+        'user_id': 'user_local_customer_2',
+        'email': os.environ.get('LOCAL_CUSTOMER_SECONDARY_EMAIL', 'buyer.two@5dm.africa'),
+        'name': os.environ.get('LOCAL_CUSTOMER_SECONDARY_NAME', 'Buyer Two'),
+        'phone': os.environ.get('LOCAL_CUSTOMER_SECONDARY_PHONE', '0711000004'),
+        'credit_balance': 28500.0,
+        'role': 'user',
+    },
 ]
+USER_LOOKUP = {user['key']: user for user in USERS}
+
+
+def get_seed_user(key):
+    return USER_LOOKUP[key]
 
 
 def ensure_database():
@@ -60,8 +97,10 @@ def ensure_database():
 
 
 def cleanup_local_rows(cursor):
-    local_user_ids = [user_id for user_id, *_ in USERS]
-    local_emails = [email for _, email, *_ in USERS]
+    local_user_ids = [user['user_id'] for user in USERS]
+    local_emails = [user['email'] for user in USERS]
+    user_placeholders = ','.join(['%s'] * len(local_user_ids))
+    email_placeholders = ','.join(['%s'] * len(local_emails))
 
     cursor.execute("DELETE FROM dispute_messages WHERE message_id LIKE 'LOCAL-%'")
     cursor.execute("DELETE FROM payment_submissions WHERE pop_id LIKE 'LOCAL-%'")
@@ -69,8 +108,8 @@ def cleanup_local_rows(cursor):
     cursor.execute("DELETE FROM feedback WHERE feedback_id LIKE 'LOCAL-%'")
     cursor.execute("DELETE FROM credit_invoices WHERE invoice_id LIKE 'LOCAL-%'")
     cursor.execute("DELETE FROM orders WHERE order_id LIKE 'LOCAL-%'")
-    cursor.execute("DELETE FROM user_sessions WHERE user_id IN (%s,%s,%s,%s)", local_user_ids)
-    cursor.execute("DELETE FROM users WHERE email IN (%s,%s,%s,%s)", local_emails)
+    cursor.execute(f"DELETE FROM user_sessions WHERE user_id IN ({user_placeholders})", local_user_ids)
+    cursor.execute(f"DELETE FROM users WHERE email IN ({email_placeholders})", local_emails)
 
 
 def seed_products(cursor, timestamp):
@@ -99,23 +138,38 @@ def seed_products(cursor, timestamp):
 
 def seed_users(cursor, timestamp):
     accepted_at = timestamp - timedelta(days=14)
-    for user_id, email, name, phone, credit_balance, role in USERS:
+    for user in USERS:
         cursor.execute(
             """INSERT INTO users
                (user_id, email, name, phone, credit_balance, role, accepted_terms, accepted_terms_at, picture, active_role, created_at, updated_at)
                VALUES (%s,%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s)""",
-            (user_id, email, name, phone, credit_balance, role, accepted_at, None, role, timestamp, timestamp)
+            (
+                user['user_id'],
+                user['email'],
+                user['name'],
+                user['phone'],
+                user['credit_balance'],
+                user['role'],
+                accepted_at,
+                None,
+                user['role'],
+                timestamp,
+                timestamp,
+            )
         )
 
 
 def seed_orders(cursor, timestamp):
+    customer_primary = get_seed_user('customer_primary')
+    customer_secondary = get_seed_user('customer_secondary')
+    admin = get_seed_user('admin')
     orders = [
         {
             'order_id': 'LOCAL-ORD-PENDING-01',
-            'user_id': 'user_local_customer_1',
-            'user_name': 'Buyer One',
-            'user_email': 'buyer.one@5dm.africa',
-            'user_phone': '0711000003',
+            'user_id': customer_primary['user_id'],
+            'user_name': customer_primary['name'],
+            'user_email': customer_primary['email'],
+            'user_phone': customer_primary['phone'],
             'items': [
                 {'product_name': 'Happy Hour Jaba - Tamarind', 'quantity': 2, 'price': 500.0},
                 {'product_name': 'Happy Hour Jaba - Pineapple', 'quantity': 1, 'price': 500.0},
@@ -129,10 +183,10 @@ def seed_orders(cursor, timestamp):
         },
         {
             'order_id': 'LOCAL-ORD-FULFILLED-01',
-            'user_id': 'user_local_customer_1',
-            'user_name': 'Buyer One',
-            'user_email': 'buyer.one@5dm.africa',
-            'user_phone': '0711000003',
+            'user_id': customer_primary['user_id'],
+            'user_name': customer_primary['name'],
+            'user_email': customer_primary['email'],
+            'user_phone': customer_primary['phone'],
             'items': [
                 {'product_name': 'Happy Hour Jaba - Watermelon', 'quantity': 3, 'price': 500.0},
             ],
@@ -145,10 +199,10 @@ def seed_orders(cursor, timestamp):
         },
         {
             'order_id': 'LOCAL-ORD-CANCELLED-01',
-            'user_id': 'user_local_customer_2',
-            'user_name': 'Buyer Two',
-            'user_email': 'buyer.two@5dm.africa',
-            'user_phone': '0711000004',
+            'user_id': customer_secondary['user_id'],
+            'user_name': customer_secondary['name'],
+            'user_email': customer_secondary['email'],
+            'user_phone': customer_secondary['phone'],
             'items': [
                 {'product_name': 'Happy Hour Jaba - Hibiscus', 'quantity': 1, 'price': 500.0},
             ],
@@ -181,7 +235,7 @@ def seed_orders(cursor, timestamp):
                 order['status'],
                 order['verification_status'],
                 'Stock check failed' if order['status'] == 'cancelled' else None,
-                'Ops Admin' if order['status'] == 'cancelled' else None,
+                admin['name'] if order['status'] == 'cancelled' else None,
                 order['created_at'] if order['status'] == 'cancelled' else None,
                 order['created_at'],
                 order['created_at'],
@@ -190,6 +244,9 @@ def seed_orders(cursor, timestamp):
 
 
 def seed_invoices(cursor, timestamp):
+    customer_primary = get_seed_user('customer_primary')
+    customer_secondary = get_seed_user('customer_secondary')
+    admin = get_seed_user('admin')
     invoice_1_items = [
         {
             'flavor': 'Watermelon',
@@ -220,10 +277,10 @@ def seed_invoices(cursor, timestamp):
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (
             'LOCAL-INV-001',
-            'user_local_customer_1',
-            'Buyer One',
-            'buyer.one@5dm.africa',
-            '0711000003',
+            customer_primary['user_id'],
+            customer_primary['name'],
+            customer_primary['email'],
+            customer_primary['phone'],
             (timestamp - timedelta(days=7)).date().isoformat(),
             timestamp.date().isoformat(),
             json.dumps(invoice_1_items),
@@ -234,7 +291,7 @@ def seed_invoices(cursor, timestamp):
             'credit',
             'Local seeded invoice from fulfilled credit order',
             timestamp - timedelta(days=1),
-            'Ops Admin',
+            admin['name'],
             'contact@myhappyhour.co.ke',
             'Nairobi',
             'Airtel Money',
@@ -253,10 +310,10 @@ def seed_invoices(cursor, timestamp):
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (
             'LOCAL-INV-002',
-            'user_local_customer_2',
-            'Buyer Two',
-            'buyer.two@5dm.africa',
-            '0711000004',
+            customer_secondary['user_id'],
+            customer_secondary['name'],
+            customer_secondary['email'],
+            customer_secondary['phone'],
             (timestamp - timedelta(days=30)).date().isoformat(),
             (timestamp - timedelta(days=1)).date().isoformat(),
             json.dumps(invoice_2_items),
@@ -267,7 +324,7 @@ def seed_invoices(cursor, timestamp):
             'credit',
             'Backlog entry for reconciliation testing',
             timestamp - timedelta(days=3),
-            'Ops Admin',
+            admin['name'],
             'contact@myhappyhour.co.ke',
             'Nairobi',
             'Airtel Money',
@@ -279,6 +336,8 @@ def seed_invoices(cursor, timestamp):
 
 
 def seed_payments_and_disputes(cursor, timestamp):
+    customer_primary = get_seed_user('customer_primary')
+    admin = get_seed_user('admin')
     cursor.execute(
         """INSERT INTO payment_submissions
            (pop_id, invoice_id, user_id, user_name, user_email, transaction_code,
@@ -288,9 +347,9 @@ def seed_payments_and_disputes(cursor, timestamp):
         (
             'LOCAL-POP-001',
             'LOCAL-INV-001',
-            'user_local_customer_1',
-            'Buyer One',
-            'buyer.one@5dm.africa',
+            customer_primary['user_id'],
+            customer_primary['name'],
+            customer_primary['email'],
             'QWE123LOCAL',
             1500.0,
             'airtel_money',
@@ -302,7 +361,7 @@ def seed_payments_and_disputes(cursor, timestamp):
             1400.0,
             'Amount mismatch: Customer KES 1,500 vs Admin KES 1,400',
             timestamp - timedelta(hours=2),
-            'Ops Admin',
+            admin['name'],
             json.dumps([]),
         )
     )
@@ -315,8 +374,8 @@ def seed_payments_and_disputes(cursor, timestamp):
             'LOCAL-MSG-001',
             'LOCAL-POP-001',
             'LOCAL-INV-001',
-            'user_local_customer_1',
-            'Buyer One',
+            customer_primary['user_id'],
+            customer_primary['name'],
             'user',
             'The payment was full. Please recheck the finance ledger for Airtel reference QWE123LOCAL.',
             timestamp - timedelta(hours=2),
@@ -325,11 +384,15 @@ def seed_payments_and_disputes(cursor, timestamp):
 
 
 def seed_notifications(cursor, timestamp):
+    customer_primary = get_seed_user('customer_primary')
+    customer_secondary = get_seed_user('customer_secondary')
+    admin = get_seed_user('admin')
+    super_admin = get_seed_user('super_admin')
     notifications = [
-        ('LOCAL-NOTIF-001', 'user_local_admin', 'New Order Received', 'Buyer One placed a pending local test order.', 'order', {'order_id': 'LOCAL-ORD-PENDING-01'}),
-        ('LOCAL-NOTIF-002', 'user_local_super_admin', 'Payment Needs Review', 'Local seeded POP failed verification and needs review.', 'payment', {'pop_id': 'LOCAL-POP-001'}),
-        ('LOCAL-NOTIF-003', 'user_local_customer_1', 'Invoice Ready', 'Your seeded invoice LOCAL-INV-001 is ready for payment.', 'invoice', {'invoice_id': 'LOCAL-INV-001'}),
-        ('LOCAL-NOTIF-004', 'user_local_customer_2', 'Backlog Credit Added', 'A backlog credit invoice has been created for testing.', 'invoice', {'invoice_id': 'LOCAL-INV-002'}),
+        ('LOCAL-NOTIF-001', admin['user_id'], 'New Order Received', f"{customer_primary['name']} placed a pending local test order.", 'order', {'order_id': 'LOCAL-ORD-PENDING-01'}),
+        ('LOCAL-NOTIF-002', super_admin['user_id'], 'Payment Needs Review', 'Local seeded POP failed verification and needs review.', 'payment', {'pop_id': 'LOCAL-POP-001'}),
+        ('LOCAL-NOTIF-003', customer_primary['user_id'], 'Invoice Ready', 'Your seeded invoice LOCAL-INV-001 is ready for payment.', 'invoice', {'invoice_id': 'LOCAL-INV-001'}),
+        ('LOCAL-NOTIF-004', customer_secondary['user_id'], 'Backlog Credit Added', 'A backlog credit invoice has been created for testing.', 'invoice', {'invoice_id': 'LOCAL-INV-002'}),
     ]
 
     for notification_id, user_id, title, message, notification_type, metadata in notifications:
@@ -342,15 +405,16 @@ def seed_notifications(cursor, timestamp):
 
 
 def seed_feedback(cursor, timestamp):
+    customer_secondary = get_seed_user('customer_secondary')
     cursor.execute(
         """INSERT INTO feedback
            (feedback_id, user_id, user_name, user_email, subject, message, status, created_at)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
         (
             'LOCAL-FB-001',
-            'user_local_customer_2',
-            'Buyer Two',
-            'buyer.two@5dm.africa',
+            customer_secondary['user_id'],
+            customer_secondary['name'],
+            customer_secondary['email'],
             'Packaging feedback',
             'Seeded note: packaging looked great, but delivery timing needs work.',
             'new',
@@ -390,9 +454,8 @@ def main():
 
     print('Seeded local data successfully.')
     print('Dev login emails:')
-    print('  super admin: mavin@5dm.africa')
-    print('  admin: ops.admin@5dm.africa')
-    print('  customer: buyer.one@5dm.africa')
+    for user in USERS:
+        print(f"  {user['role']}: {user['email']}")
 
 
 if __name__ == '__main__':

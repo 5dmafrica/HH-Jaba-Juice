@@ -25,6 +25,7 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
   const [showPreviewDialog, setShowPreviewDialog] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [emailingInvoiceId, setEmailingInvoiceId] = useState(null);
 
   // Form state
   const [selectedUser, setSelectedUser] = useState('');
@@ -177,10 +178,20 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
     window.open(`https://wa.me/${phone}?text=${encoded}`, '_blank');
   };
 
-  const shareViaEmail = (invoice) => {
-    const subject = encodeURIComponent(`HH Jaba Invoice ${invoice.invoice_id}`);
-    const body = encodeURIComponent(`Dear ${invoice.customer_name},\n\nPlease find your invoice details below:\n\nInvoice: ${invoice.invoice_id}\nPeriod: ${format(new Date(invoice.billing_period_start), 'MMM dd, yyyy')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}\nTotal: KES ${invoice.total_amount.toLocaleString()}\nStatus: ${invoice.status.toUpperCase()}\n\nPayment: Airtel Money - 0733878020\n\nHappy Hour Jaba - 5DM Africa\ncontact@myhappyhour.co.ke`);
-    window.open(`mailto:${invoice.customer_email}?subject=${subject}&body=${body}`, '_blank');
+  const shareViaEmail = async (invoice) => {
+    setEmailingInvoiceId(invoice.invoice_id);
+    try {
+      const response = await axios.post(
+        `${API}/admin/credit-invoices/${encodeURIComponent(invoice.invoice_id)}/send-email`,
+        {},
+        { withCredentials: true }
+      );
+      toast.success(response.data?.message || 'Invoice sent to customer email');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send invoice email');
+    } finally {
+      setEmailingInvoiceId(null);
+    }
   };
 
   const generateInvoiceHTML = (invoice) => {
@@ -379,6 +390,7 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                   size="sm"
                   variant="outline"
                   onClick={() => shareViaEmail(invoice)}
+                  disabled={emailingInvoiceId === invoice.invoice_id}
                   className="border-2 border-blue-600 text-blue-600"
                 >
                   <Mail className="w-4 h-4" />
@@ -715,10 +727,11 @@ const CreditInvoiceModule = ({ users, onRefresh }) => {
                   data-testid="share-email-btn"
                   variant="outline"
                   onClick={() => shareViaEmail(selectedInvoice)}
+                  disabled={emailingInvoiceId === selectedInvoice.invoice_id}
                   className="border-2 border-blue-600 text-blue-600 hover:bg-blue-50"
                 >
                   <Mail className="w-4 h-4 mr-1" />
-                  Email
+                  {emailingInvoiceId === selectedInvoice.invoice_id ? 'Sending...' : 'Email'}
                 </Button>
                 <Button
                   variant="outline"

@@ -22,6 +22,7 @@ const UserInvoices = () => {
   const [invoices, setInvoices] = useState([]);
   const [popSubmissions, setPopSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [emailingInvoiceId, setEmailingInvoiceId] = useState(null);
   
   // POP Form State
   const [showPopDialog, setShowPopDialog] = useState(false);
@@ -129,10 +130,20 @@ const UserInvoices = () => {
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
   };
 
-  const shareViaEmail = (invoice) => {
-    const subject = encodeURIComponent(`Invoice ${invoice.invoice_id} - Happy Hour Jaba`);
-    const body = encodeURIComponent(`Invoice: ${invoice.invoice_id}\nPeriod: ${format(new Date(invoice.billing_period_start), 'MMM dd, yyyy')} - ${format(new Date(invoice.billing_period_end), 'MMM dd, yyyy')}\nTotal: KES ${invoice.total_amount.toLocaleString()}\nStatus: ${invoice.status.toUpperCase()}\n\nPay to: Airtel Money 0733878020\nContact: contact@myhappyhour.co.ke`);
-    window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+  const shareViaEmail = async (invoice) => {
+    setEmailingInvoiceId(invoice.invoice_id);
+    try {
+      const response = await axios.post(
+        `${API}/users/invoices/${encodeURIComponent(invoice.invoice_id)}/send-email`,
+        {},
+        { withCredentials: true }
+      );
+      toast.success(response.data?.message || 'Invoice sent to your email');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to send invoice email');
+    } finally {
+      setEmailingInvoiceId(null);
+    }
   };
 
   const getStatusBadge = (status) => {
@@ -308,6 +319,7 @@ const UserInvoices = () => {
                           size="sm"
                           variant="outline"
                           onClick={() => shareViaEmail(invoice)}
+                          disabled={emailingInvoiceId === invoice.invoice_id}
                           className="border-2 border-blue-600 text-blue-600"
                         >
                           <Mail className="w-3 h-3" />
