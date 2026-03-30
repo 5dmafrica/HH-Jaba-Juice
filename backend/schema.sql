@@ -37,7 +37,35 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     INDEX idx_user (user_id)
 );
 
--- 3. Products
+-- 3. Approved Email Domains
+CREATE TABLE IF NOT EXISTS approved_domains (
+    domain VARCHAR(191) PRIMARY KEY,
+    is_active TINYINT(1) DEFAULT 1,
+    added_by VARCHAR(255),
+    disabled_by VARCHAR(255),
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME,
+    disabled_at DATETIME,
+    INDEX idx_active (is_active)
+);
+
+-- 4. Admin Audit Log
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    audit_id VARCHAR(50) PRIMARY KEY,
+    actor_user_id VARCHAR(50) NOT NULL,
+    actor_email VARCHAR(191),
+    action VARCHAR(100) NOT NULL,
+    target_type VARCHAR(50) NOT NULL,
+    target_id VARCHAR(191) NOT NULL,
+    details JSON,
+    created_at DATETIME NOT NULL,
+    INDEX idx_actor (actor_user_id),
+    INDEX idx_action (action),
+    INDEX idx_target (target_type, target_id),
+    INDEX idx_created (created_at)
+);
+
+-- 5. Products
 CREATE TABLE IF NOT EXISTS products (
     product_id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -54,7 +82,7 @@ CREATE TABLE IF NOT EXISTS products (
     INDEX idx_active (active)
 );
 
--- 4. Orders  (items = JSON array of {product_name, quantity, price})
+-- 6. Orders  (items = JSON array of {product_name, quantity, price})
 CREATE TABLE IF NOT EXISTS orders (
     order_id VARCHAR(50) PRIMARY KEY,
     user_id VARCHAR(50) NOT NULL,
@@ -79,7 +107,7 @@ CREATE TABLE IF NOT EXISTS orders (
     INDEX idx_created (created_at)
 );
 
--- 5. Credit Invoices  (line_items = JSON array)
+-- 7. Credit Invoices  (line_items = JSON array)
 CREATE TABLE IF NOT EXISTS credit_invoices (
     invoice_id VARCHAR(50) PRIMARY KEY,
     user_id VARCHAR(50) NOT NULL,
@@ -108,7 +136,7 @@ CREATE TABLE IF NOT EXISTS credit_invoices (
     INDEX idx_created (created_at)
 );
 
--- 6. Manual Invoices
+-- 8. Manual Invoices
 CREATE TABLE IF NOT EXISTS manual_invoices (
     invoice_id VARCHAR(50) PRIMARY KEY,
     user_id VARCHAR(50),
@@ -124,7 +152,7 @@ CREATE TABLE IF NOT EXISTS manual_invoices (
     INDEX idx_created (created_at)
 );
 
--- 7. Payment Submissions / POP  (audit_trail = JSON array)
+-- 9. Payment Submissions / POP  (audit_trail = JSON array)
 CREATE TABLE IF NOT EXISTS payment_submissions (
     pop_id VARCHAR(50) PRIMARY KEY,
     invoice_id VARCHAR(50) NOT NULL,
@@ -156,7 +184,7 @@ CREATE TABLE IF NOT EXISTS payment_submissions (
     INDEX idx_submitted (submitted_at)
 );
 
--- 8. Dispute Messages
+-- 10. Dispute Messages
 CREATE TABLE IF NOT EXISTS dispute_messages (
     message_id VARCHAR(50) PRIMARY KEY,
     pop_id VARCHAR(50) NOT NULL,
@@ -170,7 +198,7 @@ CREATE TABLE IF NOT EXISTS dispute_messages (
     INDEX idx_created (created_at)
 );
 
--- 9. Feedback
+-- 11. Feedback
 CREATE TABLE IF NOT EXISTS feedback (
     feedback_id VARCHAR(50) PRIMARY KEY,
     user_id VARCHAR(50) NOT NULL,
@@ -183,7 +211,7 @@ CREATE TABLE IF NOT EXISTS feedback (
     INDEX idx_created (created_at)
 );
 
--- 10. Notifications  (metadata = JSON object)
+-- 12. Notifications  (metadata = JSON object)
 CREATE TABLE IF NOT EXISTS notifications (
     notification_id VARCHAR(50) NOT NULL,
     user_id VARCHAR(50) NOT NULL,
@@ -201,7 +229,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     INDEX idx_created (created_at)
 );
 
--- 11. Stock Entries
+-- 13. Stock Entries
 CREATE TABLE IF NOT EXISTS stock_entries (
     entry_id VARCHAR(50) PRIMARY KEY,
     product_id VARCHAR(50) NOT NULL,

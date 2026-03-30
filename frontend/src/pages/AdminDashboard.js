@@ -119,6 +119,9 @@ const AdminDashboard = () => {
   const [expandedUsers, setExpandedUsers] = useState({});
   
   const [users, setUsers] = useState([]);
+  const [approvedDomains, setApprovedDomains] = useState([]);
+  const [newApprovedDomain, setNewApprovedDomain] = useState('');
+  const [updatingUserRoleId, setUpdatingUserRoleId] = useState(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -204,7 +207,7 @@ const AdminDashboard = () => {
   const loadAllData = async () => {
     setLoading(true);
     try {
-      await Promise.all([
+      const requests = [
         fetchPendingOrders(),
         fetchProducts(),
         fetchReconciliation(),
@@ -213,7 +216,11 @@ const AdminDashboard = () => {
         fetchDisputes(),
         fetchUsers(),
         fetchFeedback()
-      ]);
+      ];
+      if (isSuperAdmin) {
+        requests.push(fetchApprovedDomains());
+      }
+      await Promise.all(requests);
     } finally {
       setLoading(false);
     }
@@ -273,6 +280,15 @@ const AdminDashboard = () => {
       setUsers(response.data);
     } catch (error) {
       console.error('Failed to fetch users');
+    }
+  };
+
+  const fetchApprovedDomains = async () => {
+    try {
+      const response = await axios.get(`${API}/admin/domains`, { withCredentials: true });
+      setApprovedDomains(response.data);
+    } catch (error) {
+      console.error('Failed to fetch approved domains');
     }
   };
 
@@ -437,6 +453,53 @@ const AdminDashboard = () => {
       fetchDefaulters();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to delete user');
+    }
+  };
+
+  const addApprovedDomain = async () => {
+    if (!newApprovedDomain.trim()) {
+      toast.error('Enter a domain name');
+      return;
+    }
+
+    try {
+      const normalizedDomain = newApprovedDomain.trim().replace(/^@/, '');
+      await axios.post(`${API}/admin/domains`, { domain: normalizedDomain }, { withCredentials: true });
+      toast.success(`Domain ${normalizedDomain} saved`);
+      setNewApprovedDomain('');
+      fetchApprovedDomains();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to save domain');
+    }
+  };
+
+  const disableApprovedDomain = async (domain) => {
+    try {
+      await axios.delete(`${API}/admin/domains/${encodeURIComponent(domain)}`, { withCredentials: true });
+      toast.success(`Domain ${domain} disabled`);
+      fetchApprovedDomains();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to disable domain');
+    }
+  };
+
+  const updateUserRoleAssignment = async (userId, role) => {
+    try {
+      setUpdatingUserRoleId(userId);
+      const response = await axios.put(
+        `${API}/admin/users/${userId}/role`,
+        { role },
+        { withCredentials: true }
+      );
+      toast.success(`${response.data.name || response.data.email} is now ${role.replace('_', ' ')}`);
+      await fetchUsers();
+      if (checkAuth) {
+        await checkAuth();
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update role');
+    } finally {
+      setUpdatingUserRoleId(null);
     }
   };
 
@@ -1735,6 +1798,106 @@ const AdminDashboard = () => {
                     <div className="p-2 bg-white rounded border">
                       <p className="text-xs text-gray-500">Credit Cap</p>
                       <p className="font-bold">{activeRole === 'super_admin' ? 'UNLIMITED' : 'KES 30,000'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="p-4 border-2 border-black rounded-lg bg-white shadow-brutal-sm space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-display text-sm uppercase font-bold">Approved Domains</p>
+                        <p className="text-xs text-gray-500">Only active domains can sign in</p>
+                      </div>
+                      <Badge className="bg-black text-white">{approvedDomains.filter(domain => domain.is_active).length} active</Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Input
+                        data-testid="approved-domain-input"
+                        placeholder="example.com"
+                        value={newApprovedDomain}
+                        onChange={(e) => setNewApprovedDomain(e.target.value)}
+                        className="border-2 border-black"
+                      />
+                      <Button
+                        data-testid="add-approved-domain-btn"
+                        onClick={addApprovedDomain}
+                        className="bg-black text-white border-2 border-black"
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    <div className="space-y-3">
+                      {approvedDomains.length === 0 ? (
+                        <p className="text-sm text-gray-500">No managed domains yet</p>
+                      ) : (
+                        approvedDomains.map((domain) => (
+                          <div key={domain.domain} className="flex items-center justify-between gap-3 p-3 border-2 border-black rounded-lg bg-gray-50">
+                            <div>
+                              <p className="font-display text-sm uppercase">{domain.domain}</p>
+                              <p className="text-xs text-gray-500">
+                                {domain.is_active ? `Added by ${domain.added_by || 'system'}` : `Disabled by ${domain.disabled_by || 'unknown'}`}
+                              </p>
+                            </div>
+                            {domain.is_active ? (
+                              <Button
+                                data-testid={`disable-domain-${domain.domain}`}
+                                size="sm"
+                                variant="outline"
+                                onClick={() => disableApprovedDomain(domain.domain)}
+                                className="border-2 border-red-500 text-red-600"
+                              >
+                                Disable
+                              </Button>
+                            ) : (
+                              <Badge className="bg-gray-300 text-black">Inactive</Badge>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="p-4 border-2 border-black rounded-lg bg-white shadow-brutal-sm space-y-4">
+                    <div>
+                      <p className="font-display text-sm uppercase font-bold">User Roles</p>
+                      <p className="text-xs text-gray-500">Promote or demote users without redeploying</p>
+                    </div>
+                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                      {users.map((managedUser) => (
+                        <div key={managedUser.user_id} className="p-3 border-2 border-black rounded-lg bg-gray-50 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-display text-sm uppercase">{managedUser.name}</p>
+                              <p className="text-xs text-gray-500 break-all">{managedUser.email}</p>
+                            </div>
+                            <Badge className={
+                              managedUser.role === 'super_admin' ? 'bg-purple-600 text-white' :
+                              managedUser.role === 'admin' ? 'bg-hh-green text-black' :
+                              'bg-gray-200 text-black'
+                            }>
+                              {managedUser.role.replace('_', ' ')}
+                            </Badge>
+                          </div>
+                          <Select
+                            value={managedUser.role}
+                            onValueChange={(value) => updateUserRoleAssignment(managedUser.user_id, value)}
+                            disabled={managedUser.user_id === user?.user_id || updatingUserRoleId === managedUser.user_id}
+                          >
+                            <SelectTrigger className="border-2 border-black bg-white">
+                              <SelectValue placeholder="Assign role" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="user">User</SelectItem>
+                              <SelectItem value="admin">Admin</SelectItem>
+                              <SelectItem value="super_admin">Super Admin</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {managedUser.user_id === user?.user_id && (
+                            <p className="text-xs text-gray-500">Your own role is locked here to avoid removing your current access.</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>

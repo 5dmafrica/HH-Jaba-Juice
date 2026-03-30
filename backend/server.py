@@ -33,10 +33,22 @@ GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
 GOOGLE_REDIRECT_URI = os.environ.get('GOOGLE_REDIRECT_URI', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+ENABLE_DEV_AUTH = os.environ.get('ENABLE_DEV_AUTH', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+COOKIE_SECURE = os.environ.get('COOKIE_SECURE', '1' if FRONTEND_URL.startswith('https://') else '0').strip().lower() in ('1', 'true', 'yes', 'on')
+COOKIE_SAMESITE = os.environ.get('COOKIE_SAMESITE', 'none' if COOKIE_SECURE else 'lax').strip().lower()
 
-# Admin emails
-ADMIN_EMAILS = ['mavin@5dm.africa', 'yongo@5dm.africa']
-SUPER_ADMIN_EMAIL = 'mavin@5dm.africa'
+# Auth bootstrap configuration
+DEFAULT_APPROVED_DOMAINS = [
+    domain.strip().lower()
+    for domain in os.environ.get('APPROVED_EMAIL_DOMAINS', '5dm.africa').split(',')
+    if domain.strip()
+]
+BOOTSTRAP_SUPER_ADMIN_EMAIL = os.environ.get('SUPER_ADMIN_EMAIL', 'mavin@5dm.africa').strip().lower()
+ROLE_ORDER = {
+    'user': 0,
+    'admin': 1,
+    'super_admin': 2,
+}
 
 # Credit and Order Limits
 MONTHLY_CREDIT_LIMIT = 30000  # KES 30,000 per customer
@@ -155,6 +167,12 @@ class NotificationCreate(BaseModel):
     message: str
     notification_type: str = "general"
     target_users: Optional[List[str]] = None
+
+class ApprovedDomainCreate(BaseModel):
+    domain: str
+
+class UserRoleUpdate(BaseModel):
+    role: str
 
 class POPSubmission(BaseModel):
     invoice_id: str
@@ -278,6 +296,131 @@ async def db_count(sql: str, params=None) -> int:
             row = await cur.fetchone()
             return int(list(row.values())[0]) if row else 0
 
+def _normalize_domain(value: str) -> str:
+    return (value or '').strip().lower().lstrip('@')
+
+def _get_email_domain(email: str) -> str:
+    if '@' not in (email or ''):
+        return ''
+    return _normalize_domain(email.split('@', 1)[1])
+
+def get_effective_role(user: Optional[dict]) -> str:
+    if not user:
+        return 'user'
+    role = user.get('effective_role') or user.get('active_role') or user.get('role') or 'user'
+    return role if role in ROLE_ORDER else 'user'
+
+def has_effective_role(user: Optional[dict], *roles: str) -> bool:
+    return get_effective_role(user) in roles
+
+def is_actual_super_admin(user: Optional[dict]) -> bool:
+    return bool(user and user.get('role') == 'super_admin')
+
+async def get_privileged_users() -> list:
+    return await db_fetchall(
+        "SELECT * FROM users WHERE role IN ('admin','super_admin') ORDER BY created_at ASC"
+    )
+
+async def is_email_domain_approved(email: str) -> bool:
+    domain = _get_email_domain(email)
+    if not domain:
+        return False
+    approved = await db_fetchone(
+        "SELECT domain FROM approved_domains WHERE domain=%s AND is_active=1",
+        (domain,)
+    )
+    return approved is not None
+
+async def create_admin_audit_log(actor: dict, action: str, target_type: str, target_id: str, details: Optional[dict] = None):
+    if not actor:
+        return
+    await db_execute(
+        """INSERT INTO admin_audit_log
+           (audit_id, actor_user_id, actor_email, action, target_type, target_id, details, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            f"AUD-{uuid.uuid4().hex[:10].upper()}",
+            actor.get('user_id', ''),
+            actor.get('email', ''),
+            action,
+            target_type,
+            target_id,
+            _serialize(details or {}),
+            _now(),
+        )
+    )
+
+async def ensure_management_tables():
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """CREATE TABLE IF NOT EXISTS approved_domains (
+                       domain VARCHAR(191) PRIMARY KEY,
+                       is_active TINYINT(1) DEFAULT 1,
+                       added_by VARCHAR(255),
+                       disabled_by VARCHAR(255),
+                       created_at DATETIME NOT NULL,
+                       updated_at DATETIME,
+                       disabled_at DATETIME,
+                       INDEX idx_active (is_active)
+                   )"""
+            )
+            await cur.execute(
+                """CREATE TABLE IF NOT EXISTS admin_audit_log (
+                       audit_id VARCHAR(50) PRIMARY KEY,
+                       actor_user_id VARCHAR(50) NOT NULL,
+                       actor_email VARCHAR(191),
+                       action VARCHAR(100) NOT NULL,
+                       target_type VARCHAR(50) NOT NULL,
+                       target_id VARCHAR(191) NOT NULL,
+                       details JSON,
+                       created_at DATETIME NOT NULL,
+                       INDEX idx_actor (actor_user_id),
+                       INDEX idx_action (action),
+                       INDEX idx_target (target_type, target_id),
+                       INDEX idx_created (created_at)
+                   )"""
+            )
+            await conn.commit()
+
+async def create_session_token(user_id: str) -> str:
+    session_token = secrets.token_urlsafe(64)
+    now = _now()
+    expires_at = now + timedelta(days=7)
+    await db_execute("DELETE FROM user_sessions WHERE user_id=%s", (user_id,))
+    await db_execute(
+        "INSERT INTO user_sessions (user_id, session_token, expires_at, created_at) VALUES (%s,%s,%s,%s)",
+        (user_id, session_token, expires_at, now)
+    )
+    logger.info(f"Session created for user_id={user_id}")
+    return session_token
+
+def build_session_response(session_token: str, redirect_url: Optional[str] = None):
+    response = RedirectResponse(url=redirect_url or f"{FRONTEND_URL}/auth/callback", status_code=302)
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/",
+        max_age=7 * 24 * 60 * 60,
+    )
+    return response
+
+async def seed_approved_domains():
+    now = _now()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for domain in DEFAULT_APPROVED_DOMAINS or ['5dm.africa']:
+                await cur.execute(
+                    """INSERT IGNORE INTO approved_domains
+                       (domain, is_active, added_by, created_at, updated_at)
+                       VALUES (%s,1,%s,%s,%s)""",
+                    (_normalize_domain(domain), 'system', now, now)
+                )
+            await conn.commit()
+
 
 # ===== AUTH HELPERS =====
 
@@ -317,17 +460,32 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # Apply impersonated role if set
-    if session.get("impersonated_role"):
-        user["active_role"] = session["impersonated_role"]
+    active_role = user.get("role") or "user"
+    if is_actual_super_admin(user):
+        session_role = session.get("impersonated_role")
+        stored_active_role = user.get("active_role")
+        if session_role in ROLE_ORDER:
+            active_role = session_role
+        elif stored_active_role in ROLE_ORDER:
+            active_role = stored_active_role
+
+    user["active_role"] = active_role
+    user["effective_role"] = active_role
 
     return user
 
 async def get_admin_user(request: Request) -> dict:
     """Get current user and verify admin/super_admin role."""
     user = await get_current_user(request)
-    if user.get("role") not in ("admin", "super_admin"):
+    if not has_effective_role(user, "admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+async def get_super_admin_user(request: Request) -> dict:
+    """Get current user and verify actual super admin role."""
+    user = await get_current_user(request)
+    if not is_actual_super_admin(user):
+        raise HTTPException(status_code=403, detail="Super admin access required")
     return user
 
 
@@ -435,6 +593,9 @@ async def initialize_products():
 @api_router.get("/auth/google")
 async def google_login():
     """Redirect user to Google OAuth consent screen."""
+    if ENABLE_DEV_AUTH:
+        return RedirectResponse(url=f"{FRONTEND_URL}/?error=dev_auth_enabled", status_code=302)
+
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
@@ -486,12 +647,12 @@ async def google_callback(request: Request, code: str = None, error: str = None)
                 return RedirectResponse(url=frontend_error_url + "userinfo_failed", status_code=302)
             userinfo = userinfo_response.json()
 
-        email = userinfo.get("email", "")
+        email = userinfo.get("email", "").strip().lower()
         name = userinfo.get("name", "")
         picture = userinfo.get("picture", "")
         logger.info(f"Google OAuth: email={email}")
 
-        if not email.endswith("@5dm.africa"):
+        if not await is_email_domain_approved(email):
             return RedirectResponse(url=frontend_error_url + "unauthorized_domain", status_code=302)
 
         now = _now()
@@ -505,7 +666,7 @@ async def google_callback(request: Request, code: str = None, error: str = None)
             user_id = existing_user["user_id"]
         else:
             user_id = f"user_{uuid.uuid4().hex[:12]}"
-            role = "super_admin" if email == SUPER_ADMIN_EMAIL else ("admin" if email in ADMIN_EMAILS else "user")
+            role = "super_admin" if email == BOOTSTRAP_SUPER_ADMIN_EMAIL else "user"
             await db_execute(
                 """INSERT INTO users
                    (user_id, email, name, phone, credit_balance, role, accepted_terms, accepted_terms_at, picture, created_at, updated_at)
@@ -513,31 +674,31 @@ async def google_callback(request: Request, code: str = None, error: str = None)
                 (user_id, email, name, None, float(MONTHLY_CREDIT_LIMIT), role, 0, None, picture, now, now)
             )
 
-        # Create session
-        session_token = secrets.token_urlsafe(64)
-        expires_at = now + timedelta(days=7)
-        await db_execute("DELETE FROM user_sessions WHERE user_id=%s", (user_id,))
-        await db_execute(
-            "INSERT INTO user_sessions (user_id, session_token, expires_at, created_at) VALUES (%s,%s,%s,%s)",
-            (user_id, session_token, expires_at, now)
-        )
-        logger.info(f"Session created for user_id={user_id}")
-
-        resp = RedirectResponse(url=f"{FRONTEND_URL}/auth/callback", status_code=302)
-        resp.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            path="/",
-            max_age=7 * 24 * 60 * 60
-        )
-        return resp
+        session_token = await create_session_token(user_id)
+        return build_session_response(session_token)
 
     except Exception as e:
         logger.error(f"Google callback exception: {e}", exc_info=True)
         return RedirectResponse(url=frontend_error_url + "server_error", status_code=302)
+
+@api_router.get("/dev/login")
+async def dev_login(email: str):
+    """Create a local dev session without OAuth when ENABLE_DEV_AUTH is enabled."""
+    if not ENABLE_DEV_AUTH:
+        raise HTTPException(status_code=404, detail="Dev auth is disabled")
+
+    normalized_email = (email or '').strip().lower()
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if not await is_email_domain_approved(normalized_email):
+        raise HTTPException(status_code=403, detail="Unauthorized domain")
+
+    user = await db_fetchone("SELECT * FROM users WHERE email=%s", (normalized_email,))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Seed local data first.")
+
+    session_token = await create_session_token(user["user_id"])
+    return build_session_response(session_token)
 
 @api_router.get("/auth/me")
 async def get_me(request: Request):
@@ -700,7 +861,7 @@ async def create_order(order_data: OrderCreate, request: Request):
         for order in today_orders
     )
 
-    if today_bottles + total_quantity > DAILY_ORDER_LIMIT and user.get("role") != "super_admin":
+    if today_bottles + total_quantity > DAILY_ORDER_LIMIT and not has_effective_role(user, "super_admin"):
         raise HTTPException(
             status_code=400,
             detail=f"Daily limit of {DAILY_ORDER_LIMIT} bottles reached. You've ordered {today_bottles} today."
@@ -718,7 +879,7 @@ async def create_order(order_data: OrderCreate, request: Request):
         )
         month_credit_used = float(month_credit_total.get("total", 0) or 0)
 
-        if month_credit_used + total_amount > MONTHLY_CREDIT_LIMIT and user.get("role") != "super_admin":
+        if month_credit_used + total_amount > MONTHLY_CREDIT_LIMIT and not has_effective_role(user, "super_admin"):
             raise HTTPException(
                 status_code=400,
                 detail=f"Monthly credit limit of KES {MONTHLY_CREDIT_LIMIT:,} reached. You've used KES {month_credit_used:,} this month."
@@ -786,7 +947,7 @@ async def create_order(order_data: OrderCreate, request: Request):
         get_order_confirmation_html(order_doc, user)
     )
 
-    admins = await db_fetchall("SELECT * FROM users WHERE role='admin'")
+    admins = await get_privileged_users()
     items_summary = ", ".join([
         f"{item.product_name.replace('Happy Hour Jaba - ', '')} x{item.quantity}"
         for item in order_data.items
@@ -1057,6 +1218,131 @@ async def get_all_users(request: Request):
     await get_admin_user(request)
     return await db_fetchall("SELECT * FROM users ORDER BY created_at DESC")
 
+@api_router.get("/admin/domains")
+async def get_approved_domains(request: Request):
+    """Get approved sign-in domains (super admin only)."""
+    await get_super_admin_user(request)
+    return await db_fetchall(
+        "SELECT domain, is_active, added_by, disabled_by, created_at, updated_at, disabled_at FROM approved_domains ORDER BY domain ASC"
+    )
+
+@api_router.post("/admin/domains")
+async def upsert_approved_domain(domain_data: ApprovedDomainCreate, request: Request):
+    """Add or reactivate an approved sign-in domain (super admin only)."""
+    admin = await get_super_admin_user(request)
+    domain = _normalize_domain(domain_data.domain)
+    if not domain or '.' not in domain:
+        raise HTTPException(status_code=400, detail="Valid domain required")
+
+    now = _now()
+    actor = admin.get("name") or admin.get("email") or "super_admin"
+    existing = await db_fetchone("SELECT * FROM approved_domains WHERE domain=%s", (domain,))
+
+    if existing:
+        await db_execute(
+            """UPDATE approved_domains
+               SET is_active=1, added_by=%s, disabled_by=NULL, disabled_at=NULL, updated_at=%s
+               WHERE domain=%s""",
+            (actor, now, domain)
+        )
+        action = "domain_reactivated" if not existing.get("is_active") else "domain_updated"
+    else:
+        await db_execute(
+            """INSERT INTO approved_domains
+               (domain, is_active, added_by, created_at, updated_at)
+               VALUES (%s,1,%s,%s,%s)""",
+            (domain, actor, now, now)
+        )
+        action = "domain_added"
+
+    await create_admin_audit_log(
+        admin,
+        action,
+        "approved_domain",
+        domain,
+        {"domain": domain, "active": True}
+    )
+    return await db_fetchone(
+        "SELECT domain, is_active, added_by, disabled_by, created_at, updated_at, disabled_at FROM approved_domains WHERE domain=%s",
+        (domain,)
+    )
+
+@api_router.delete("/admin/domains/{domain}")
+async def disable_approved_domain(domain: str, request: Request):
+    """Disable an approved sign-in domain (super admin only)."""
+    admin = await get_super_admin_user(request)
+    normalized_domain = _normalize_domain(domain)
+    existing = await db_fetchone("SELECT * FROM approved_domains WHERE domain=%s", (normalized_domain,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    if existing.get("is_active"):
+        active_count = await db_count("SELECT COUNT(*) FROM approved_domains WHERE is_active=1")
+        if active_count <= 1:
+            raise HTTPException(status_code=400, detail="At least one approved domain must remain active")
+
+    now = _now()
+    actor = admin.get("name") or admin.get("email") or "super_admin"
+    await db_execute(
+        """UPDATE approved_domains
+           SET is_active=0, disabled_by=%s, disabled_at=%s, updated_at=%s
+           WHERE domain=%s""",
+        (actor, now, now, normalized_domain)
+    )
+    await create_admin_audit_log(
+        admin,
+        "domain_disabled",
+        "approved_domain",
+        normalized_domain,
+        {"domain": normalized_domain, "active": False}
+    )
+    return {"message": f"Domain {normalized_domain} disabled"}
+
+@api_router.put("/admin/users/{user_id}/role")
+async def update_user_role(user_id: str, role_update: UserRoleUpdate, request: Request):
+    """Promote or demote a user role (super admin only)."""
+    admin = await get_super_admin_user(request)
+    new_role = (role_update.role or '').strip().lower()
+    if new_role not in ROLE_ORDER:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if admin["user_id"] == user_id:
+        raise HTTPException(status_code=400, detail="Cannot change your own role")
+
+    target_user = await db_fetchone("SELECT * FROM users WHERE user_id=%s", (user_id,))
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    previous_role = target_user.get("role", "user")
+    if previous_role == new_role:
+        return target_user
+
+    if previous_role == "super_admin" and new_role != "super_admin":
+        super_admin_count = await db_count("SELECT COUNT(*) FROM users WHERE role='super_admin'")
+        if super_admin_count <= 1:
+            raise HTTPException(status_code=400, detail="At least one super admin must remain assigned")
+
+    now = _now()
+    await db_execute(
+        "UPDATE users SET role=%s, active_role=%s, updated_at=%s WHERE user_id=%s",
+        (new_role, new_role, now, user_id)
+    )
+    await db_execute(
+        "UPDATE user_sessions SET impersonated_role=NULL WHERE user_id=%s",
+        (user_id,)
+    )
+    await create_admin_audit_log(
+        admin,
+        "user_role_updated",
+        "user",
+        user_id,
+        {
+            "email": target_user.get("email"),
+            "previous_role": previous_role,
+            "new_role": new_role,
+        }
+    )
+    return await db_fetchone("SELECT * FROM users WHERE user_id=%s", (user_id,))
+
 @api_router.delete("/admin/users/{user_id}")
 async def delete_user(user_id: str, request: Request):
     """Delete a user (admin only)."""
@@ -1069,8 +1355,8 @@ async def delete_user(user_id: str, request: Request):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.get("role") == "admin":
-        raise HTTPException(status_code=400, detail="Cannot delete admin users")
+    if user.get("role") in ("admin", "super_admin"):
+        raise HTTPException(status_code=400, detail="Cannot delete elevated users")
 
     await db_execute("DELETE FROM user_sessions WHERE user_id=%s", (user_id,))
     await db_execute("DELETE FROM orders WHERE user_id=%s", (user_id,))
@@ -1642,7 +1928,7 @@ async def submit_pop(pop_data: POPSubmission, request: Request):
         )
     )
 
-    admins = await db_fetchall("SELECT * FROM users WHERE role='admin'")
+    admins = await get_privileged_users()
     for admin in admins:
         await db_execute(
             """INSERT INTO notifications
@@ -1889,7 +2175,7 @@ async def send_dispute_message(msg: DisputeMessage, request: Request):
     if not pop:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    is_admin = user.get("role") in ("admin", "super_admin")
+    is_admin = has_effective_role(user, "admin", "super_admin")
     if not is_admin and pop["user_id"] != user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -1901,7 +2187,7 @@ async def send_dispute_message(msg: DisputeMessage, request: Request):
            (message_id, pop_id, invoice_id, sender_id, sender_name, sender_role, message, created_at)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
         (message_id, msg.pop_id, pop.get("invoice_id"),
-         user["user_id"], user.get("name", ""), user.get("role", "user"),
+            user["user_id"], user.get("name", ""), get_effective_role(user),
          msg.message, now)
     )
 
@@ -1919,7 +2205,7 @@ async def send_dispute_message(msg: DisputeMessage, request: Request):
             )
         )
     else:
-        admins = await db_fetchall("SELECT * FROM users WHERE role='admin'")
+        admins = await get_privileged_users()
         for a in admins:
             await db_execute(
                 """INSERT INTO notifications
@@ -1945,7 +2231,7 @@ async def get_dispute_messages(pop_id: str, request: Request):
     if not pop:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    is_admin = user.get("role") in ("admin", "super_admin")
+    is_admin = has_effective_role(user, "admin", "super_admin")
     if not is_admin and pop["user_id"] != user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -2085,15 +2371,12 @@ async def send_defaulter_warning(user_id: str, request: Request, template: str =
 @api_router.post("/admin/switch-role")
 async def switch_role(request: Request, target_role: str = "super_admin"):
     """Super Admin switches their viewing role for testing."""
-    user = await get_current_user(request)
-
-    if user.get("email") != SUPER_ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Only Super Admin can switch roles")
+    user = await get_super_admin_user(request)
 
     if target_role not in ("super_admin", "admin", "user"):
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    session_token = request.cookies.get("session_token")
+    session_token = await get_session_token(request)
     await db_execute(
         "UPDATE user_sessions SET impersonated_role=%s WHERE token_prefix=LEFT(%s,191)",
         (target_role, session_token)
@@ -2102,6 +2385,13 @@ async def switch_role(request: Request, target_role: str = "super_admin"):
         "UPDATE users SET active_role=%s WHERE user_id=%s",
         (target_role, user["user_id"])
     )
+    await create_admin_audit_log(
+        user,
+        "active_role_switched",
+        "user",
+        user["user_id"],
+        {"target_role": target_role}
+    )
 
     return {"message": f"Switched to {target_role} view", "active_role": target_role}
 
@@ -2109,8 +2399,8 @@ async def switch_role(request: Request, target_role: str = "super_admin"):
 async def get_current_role(request: Request):
     """Get current active role for Super Admin."""
     user = await get_current_user(request)
-    active_role = user.get("active_role", user.get("role", "user"))
-    is_super_admin = user.get("email") == SUPER_ADMIN_EMAIL or user.get("role") == "super_admin"
+    active_role = get_effective_role(user)
+    is_super_admin = is_actual_super_admin(user)
     return {
         "actual_role": user.get("role"),
         "active_role": active_role,
@@ -2120,10 +2410,7 @@ async def get_current_role(request: Request):
 @api_router.post("/admin/maintenance/reset-test-data")
 async def reset_test_data(request: Request):
     """Super Admin resets all test orders and invoices."""
-    user = await get_current_user(request)
-
-    if user.get("email") != SUPER_ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Only Super Admin can reset test data")
+    user = await get_super_admin_user(request)
 
     orders_count = await db_count("SELECT COUNT(*) FROM orders")
     invoices_count = await db_count("SELECT COUNT(*) FROM credit_invoices")
@@ -2152,10 +2439,7 @@ async def reset_test_data(request: Request):
 @api_router.post("/admin/maintenance/reset-counters")
 async def reset_counters(request: Request):
     """Super Admin resets daily order counters."""
-    user = await get_current_user(request)
-
-    if user.get("email") != SUPER_ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Only Super Admin can reset counters")
+    user = await get_super_admin_user(request)
 
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
     count = await db_count(
@@ -2203,6 +2487,8 @@ async def startup_event():
         minsize=2,
         maxsize=10
     )
+    await ensure_management_tables()
+    await seed_approved_domains()
     await initialize_products()
     logger.info("HH Jaba Staff Portal API started (MySQL)")
 
