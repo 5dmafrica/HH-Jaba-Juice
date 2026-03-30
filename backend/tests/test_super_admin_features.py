@@ -13,7 +13,7 @@ import pytest
 import requests
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 
@@ -283,6 +283,94 @@ class TestDeleteCreditInvoice:
         
         assert response.status_code == 404, f"Expected 404, got {response.status_code}"
         print(f"SUCCESS: Nonexistent invoice correctly returns 404")
+
+    def test_admin_mark_invoice_paid_does_not_change_user_credit_balance(self, super_admin_session):
+        """Marking a credit invoice as paid by admin should not alter user credit_balance directly."""
+        # Setup user and invoice
+        user_id = f"TEST_user_{uuid.uuid4().hex[:12]}"
+        user_email = f"TEST_{uuid.uuid4().hex[:8]}@5dm.africa"
+        client = MongoClient(MONGO_URL)
+        db = client[DB_NAME]
+        db.users.insert_one({
+            "user_id": user_id,
+            "email": user_email,
+            "name": "Test Admin Paid User",
+            "phone": "0710000000",
+            "credit_balance": 5000.0,
+            "role": "user",
+            "accepted_terms": True,
+            "accepted_terms_at": datetime.now(timezone.utc).isoformat(),
+            "picture": None,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+
+        invoice_payload = {
+            "user_id": user_id,
+            "billing_period_start": (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d"),
+            "billing_period_end": datetime.utcnow().strftime("%Y-%m-%d"),
+            "line_items": [{"flavor": "Tamarind", "quantity": 1, "unit_price": 500, "status": "unpaid"}],
+            "notes": "TEST admin status update invoice",
+            "payment_type": "credit"
+        }
+
+        create_response = super_admin_session.post(f"{BASE_URL}/api/admin/credit-invoices", json=invoice_payload)
+        assert create_response.status_code in [200, 201], f"Failed to create invoice: {create_response.text}"
+        invoice_id = create_response.json().get("invoice_id")
+
+        # Mark invoice as paid via admin status route
+        update_response = super_admin_session.put(
+            f"{BASE_URL}/api/admin/credit-invoices/{invoice_id}/status",
+            json={"status": "paid"}
+        )
+        assert update_response.status_code == 200, f"Failed to update status: {update_response.text}"
+
+        user = db.users.find_one({"user_id": user_id})
+        assert user is not None
+        assert user.get("credit_balance") == 5000.0, f"Credit balance should remain unchanged after admin status update, got {user.get('credit_balance')}"
+
+        updated_invoice = db.credit_invoices.find_one({"invoice_id": invoice_id})
+        assert updated_invoice is not None
+        assert updated_invoice.get("status") == "paid"
+
+        # Cleanup
+        db.credit_invoices.delete_one({"invoice_id": invoice_id})
+        db.users.delete_one({"user_id": user_id})
+        client.close()
+
+    def test_admin_status_update_reflects_in_user_invoices(self, super_admin_session, regular_user_session):
+        """Admin status update should be visible in user invoice endpoint."""
+        # Create invoice for existing regular user
+        invoice_data = {
+            "user_id": REGULAR_USER_ID,
+            "billing_period_start": "2026-01-01",
+            "billing_period_end": "2026-01-31",
+            "line_items": [{"flavor": "Tamarind", "quantity": 2, "unit_price": 500, "status": "unpaid"}],
+            "notes": "TEST status sync invoice",
+            "payment_type": "credit"
+        }
+
+        create_response = super_admin_session.post(f"{BASE_URL}/api/admin/credit-invoices", json=invoice_data)
+        assert create_response.status_code in [200, 201], f"Could not create invoice: {create_response.text}"
+        invoice_id = create_response.json().get("invoice_id")
+
+        # Admin updates status to paid
+        update_response = super_admin_session.put(
+            f"{BASE_URL}/api/admin/credit-invoices/{invoice_id}/status",
+            json={"status": "paid"}
+        )
+        assert update_response.status_code == 200, f"Failed to update status: {update_response.text}"
+
+        # Regular user sees updated status
+        user_invoices_resp = regular_user_session.get(f"{BASE_URL}/api/users/invoices")
+        assert user_invoices_resp.status_code == 200, f"Could not fetch user invoices: {user_invoices_resp.text}"
+        user_invoices = user_invoices_resp.json()
+
+        matching = [inv for inv in user_invoices if inv.get("invoice_id") == invoice_id]
+        assert len(matching) == 1, "Updated invoice not found in user invoices"
+        assert matching[0].get("status") == "paid", f"Expected paid status in user invoice, got {matching[0].get('status')}"
+
+        # Cleanup
+        super_admin_session.delete(f"{BASE_URL}/api/admin/credit-invoices/{invoice_id}")
 
 
 # ===== FIXTURES =====

@@ -1898,17 +1898,35 @@ async def update_credit_invoice_status(invoice_id: str, request: Request):
     """Update credit invoice status (admin only)."""
     await get_admin_user(request)
 
+    invoice = await db_fetchone("SELECT * FROM credit_invoices WHERE invoice_id=%s", (invoice_id,))
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
     body = await request.json()
     new_status = body.get("status", "unpaid")
 
     if new_status not in ["paid", "partial", "unpaid"]:
         raise HTTPException(status_code=400, detail="Invalid status")
 
+    prev_status = invoice.get("status")
+
     rows = await db_execute(
         "UPDATE credit_invoices SET status=%s WHERE invoice_id=%s", (new_status, invoice_id)
     )
     if rows == 0:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if prev_status != new_status:
+        await db_execute(
+            "INSERT INTO notifications (notification_id, user_id, title, message, notification_type, `read`, created_at) VALUES (%s,%s,%s,%s,'invoice',0,%s)",
+            (
+                f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+                invoice.get("user_id"),
+                "Invoice Status Updated",
+                f"Invoice {invoice_id} status changed from {prev_status.upper()} to {new_status.upper()}.",
+                _now()
+            )
+        )
 
     return {"message": f"Invoice status updated to {new_status}"}
 
@@ -2545,7 +2563,12 @@ async def _apply_approved_payment(pop: dict, verified_amount: float, approval_no
     invoice = await db_fetchone(
         "SELECT * FROM credit_invoices WHERE invoice_id=%s", (pop["invoice_id"],)
     )
+    invoice_already_paid_by_admin = False
     if invoice:
+        # If the invoice was marked paid manually by admin/super_admin, do NOT adjust credit balance here.
+        if invoice.get("status") == "paid":
+            invoice_already_paid_by_admin = True
+
         approved_sum = await db_fetchone(
             "SELECT COALESCE(SUM(verified_amount),0) as total FROM payment_submissions WHERE invoice_id=%s AND status='approved'",
             (pop["invoice_id"],)
@@ -2557,10 +2580,12 @@ async def _apply_approved_payment(pop: dict, verified_amount: float, approval_no
             (new_status, total_paid, pop["invoice_id"])
         )
 
-    await db_execute(
-        "UPDATE users SET credit_balance=credit_balance+%s WHERE user_id=%s",
-        (verified_amount, pop["user_id"])
-    )
+    if not invoice_already_paid_by_admin:
+        await db_execute(
+            "UPDATE users SET credit_balance=credit_balance+%s WHERE user_id=%s",
+            (verified_amount, pop["user_id"])
+        )
+
 
     user = await db_fetchone("SELECT credit_balance FROM users WHERE user_id=%s", (pop["user_id"],))
     remaining = MONTHLY_CREDIT_LIMIT - float(user.get("credit_balance", 0)) if user else 0
