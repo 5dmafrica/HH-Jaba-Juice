@@ -134,8 +134,8 @@ const ProfileSetup = () => {
                   This service is exclusively available to employees of 5DM Africa with valid @5dm.africa email addresses.</p>
                   
                   <p><strong>2. Credit System</strong><br/>
-                  - Each employee receives a monthly credit limit of KES 10,000<br/>
-                  - Weekly credit limit: 5 bottles per week<br/>
+                  - Each employee receives a monthly credit limit of KES 30,000<br/>
+                  - Weekly credit limit: 10 bottles per week<br/>
                   - Daily order limit: 5 bottles per day (any payment method)<br/>
                   - Credit balance resets monthly</p>
                   
