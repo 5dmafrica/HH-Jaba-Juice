@@ -130,32 +130,6 @@ const AdminDashboard = () => {
   const [updatingUserRoleId, setUpdatingUserRoleId] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (!isAdmin) {
-      navigate('/dashboard');
-      return;
-    }
-    loadAllData();
-  }, [isAdmin, navigate, loadAllData]);
-
-  // Auto-refresh pending orders every 10 seconds when on pending tab
-  useEffect(() => {
-    if (activeTab === 'pending') {
-      const interval = setInterval(() => {
-        fetchPendingOrders();
-      }, 10000); // Refresh every 10 seconds
-      return () => clearInterval(interval);
-    }
-  }, [activeTab, pendingFilter, fetchPendingOrders]);
-
-  // Poll for admin notifications every 15 seconds
-  useEffect(() => {
-    fetchAdminNotifications();
-    const interval = setInterval(() => {
-      fetchAdminNotifications();
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [fetchAdminNotifications]);
 
   const fetchAdminNotifications = useCallback(async () => {
     try {
@@ -209,29 +183,6 @@ const AdminDashboard = () => {
   const toggleExpandUser = (userId) => {
     setExpandedUsers(prev => ({ ...prev, [userId]: !prev[userId] }));
   };
-
-  const loadAllData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const requests = [
-        fetchPendingOrders(),
-        fetchProducts(),
-        fetchStockEntries(),
-        fetchReconciliation(),
-        fetchDefaulters(),
-        fetchPendingPayments(),
-        fetchDisputes(),
-        fetchUsers(),
-        fetchFeedback()
-      ];
-      if (isSuperAdmin) {
-        requests.push(fetchApprovedDomains());
-      }
-      await Promise.all(requests);
-    } finally {
-      setLoading(false);
-    }
-  }, [fetchPendingOrders, fetchProducts, fetchStockEntries, fetchReconciliation, fetchDefaulters, fetchPendingPayments, fetchDisputes, fetchUsers, fetchFeedback, fetchApprovedDomains, isSuperAdmin]);
 
   const fetchPendingOrders = useCallback(async () => {
     try {
@@ -681,6 +632,56 @@ const AdminDashboard = () => {
       console.error('Failed to fetch disputes');
     }
   }, []);
+
+  const loadAllData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const requests = [
+        fetchPendingOrders(),
+        fetchProducts(),
+        fetchStockEntries(),
+        fetchReconciliation(),
+        fetchDefaulters(),
+        fetchPendingPayments(),
+        fetchDisputes(),
+        fetchUsers(),
+        fetchFeedback()
+      ];
+      if (isSuperAdmin) {
+        requests.push(fetchApprovedDomains());
+      }
+      await Promise.all(requests);
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchPendingOrders, fetchProducts, fetchStockEntries, fetchReconciliation, fetchDefaulters, fetchPendingPayments, fetchDisputes, fetchUsers, fetchFeedback, fetchApprovedDomains, isSuperAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      navigate('/dashboard');
+      return;
+    }
+    loadAllData();
+  }, [isAdmin, navigate, loadAllData]);
+
+  // Auto-refresh pending orders every 10 seconds when on pending tab
+  useEffect(() => {
+    if (activeTab === 'pending') {
+      const interval = setInterval(() => {
+        fetchPendingOrders();
+      }, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, pendingFilter, fetchPendingOrders]);
+
+  // Poll for admin notifications every 15 seconds
+  useEffect(() => {
+    fetchAdminNotifications();
+    const interval = setInterval(() => {
+      fetchAdminNotifications();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [fetchAdminNotifications]);
 
   const openDisputeChat = async (dispute) => {
     setSelectedDispute(dispute);
