@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
@@ -20,11 +20,7 @@ const OrderHistory = () => {
   const [filterPayment, setFilterPayment] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
 
-  useEffect(() => {
-    fetchOrders();
-  }, [filterPayment, filterStatus]);
-
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -38,7 +34,13 @@ const OrderHistory = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filterPayment, filterStatus]);
+
+  useEffect(() => {
+    fetchOrders();
+  }, [fetchOrders]);
+
+
 
   const getStatusBadge = (status, verificationStatus) => {
     if (status === 'fulfilled' && verificationStatus === 'verified') {

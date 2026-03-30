@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
@@ -136,7 +136,7 @@ const AdminDashboard = () => {
       return;
     }
     loadAllData();
-  }, [isAdmin, navigate]);
+  }, [isAdmin, navigate, loadAllData]);
 
   // Auto-refresh pending orders every 10 seconds when on pending tab
   useEffect(() => {
@@ -146,7 +146,7 @@ const AdminDashboard = () => {
       }, 10000); // Refresh every 10 seconds
       return () => clearInterval(interval);
     }
-  }, [activeTab, pendingFilter]);
+  }, [activeTab, pendingFilter, fetchPendingOrders]);
 
   // Poll for admin notifications every 15 seconds
   useEffect(() => {
@@ -155,9 +155,9 @@ const AdminDashboard = () => {
       fetchAdminNotifications();
     }, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchAdminNotifications]);
 
-  const fetchAdminNotifications = async () => {
+  const fetchAdminNotifications = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/notifications`, { withCredentials: true });
       const notifs = response.data;
@@ -182,7 +182,7 @@ const AdminDashboard = () => {
     } catch (error) {
       // Silently fail for notification polling
     }
-  };
+  }, [lastNotifCheck, unreadNotifCount]);
 
   const markNotificationRead = async (notificationId) => {
     try {
@@ -210,7 +210,7 @@ const AdminDashboard = () => {
     setExpandedUsers(prev => ({ ...prev, [userId]: !prev[userId] }));
   };
 
-  const loadAllData = async () => {
+  const loadAllData = useCallback(async () => {
     setLoading(true);
     try {
       const requests = [
@@ -231,9 +231,9 @@ const AdminDashboard = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetchPendingOrders, fetchProducts, fetchStockEntries, fetchReconciliation, fetchDefaulters, fetchPendingPayments, fetchDisputes, fetchUsers, fetchFeedback, fetchApprovedDomains, isSuperAdmin]);
 
-  const fetchPendingOrders = async () => {
+  const fetchPendingOrders = useCallback(async () => {
     try {
       const params = pendingFilter !== 'all' ? `?payment_method=${pendingFilter}` : '';
       const response = await axios.get(`${API}/admin/pending-orders${params}`, { withCredentials: true });
@@ -241,25 +241,25 @@ const AdminDashboard = () => {
     } catch (error) {
       console.error('Failed to fetch pending orders');
     }
-  };
+  }, [pendingFilter]);
 
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/products/all`, { withCredentials: true });
       setProducts(response.data);
     } catch (error) {
       console.error('Failed to fetch products');
     }
-  };
+  }, []);
 
-  const fetchStockEntries = async () => {
+  const fetchStockEntries = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/stock-entries?limit=500`, { withCredentials: true });
       setStockEntries(response.data || []);
     } catch (error) {
       console.error('Failed to fetch stock entries');
     }
-  };
+  }, []);
 
   const getFilteredStockLedgerEntries = () => {
     const fromDate = stockLedgerFromDate ? new Date(`${stockLedgerFromDate}T00:00:00`) : null;
@@ -331,7 +331,7 @@ const AdminDashboard = () => {
     URL.revokeObjectURL(url);
   };
 
-  const fetchReconciliation = async (search = '') => {
+  const fetchReconciliation = useCallback(async (search = '') => {
     try {
       const params = search ? `?search=${encodeURIComponent(search)}` : '';
       const response = await axios.get(`${API}/admin/reconciliation${params}`, { withCredentials: true });
@@ -339,9 +339,9 @@ const AdminDashboard = () => {
     } catch (error) {
       console.error('Failed to fetch reconciliation');
     }
-  };
+  }, []);
 
-  const fetchDefaulters = async (search = '') => {
+  const fetchDefaulters = useCallback(async (search = '') => {
     try {
       const params = search ? `?search=${encodeURIComponent(search)}` : '';
       const response = await axios.get(`${API}/admin/defaulters${params}`, { withCredentials: true });
@@ -349,43 +349,43 @@ const AdminDashboard = () => {
     } catch (error) {
       console.error('Failed to fetch defaulters');
     }
-  };
+  }, []);
 
-  const fetchPendingPayments = async () => {
+  const fetchPendingPayments = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/payments/pending`, { withCredentials: true });
       setPendingPayments(response.data);
     } catch (error) {
       console.error('Failed to fetch pending payments');
     }
-  };
+  }, []);
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/users`, { withCredentials: true });
       setUsers(response.data);
     } catch (error) {
       console.error('Failed to fetch users');
     }
-  };
+  }, []);
 
-  const fetchApprovedDomains = async () => {
+  const fetchApprovedDomains = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/domains`, { withCredentials: true });
       setApprovedDomains(response.data);
     } catch (error) {
       console.error('Failed to fetch approved domains');
     }
-  };
+  }, []);
 
-  const fetchFeedback = async () => {
+  const fetchFeedback = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/feedback`, { withCredentials: true });
       setFeedback(response.data);
     } catch (error) {
       console.error('Failed to fetch feedback');
     }
-  };
+  }, []);
 
   // Order Actions
   const fulfillOrder = async (orderId) => {
@@ -673,14 +673,14 @@ const AdminDashboard = () => {
   };
 
   // Dispute Chat Functions
-  const fetchDisputes = async () => {
+  const fetchDisputes = useCallback(async () => {
     try {
       const response = await axios.get(`${API}/admin/disputes`, { withCredentials: true });
       setDisputes(response.data);
     } catch (error) {
       console.error('Failed to fetch disputes');
     }
-  };
+  }, []);
 
   const openDisputeChat = async (dispute) => {
     setSelectedDispute(dispute);
@@ -789,7 +789,7 @@ const AdminDashboard = () => {
 
   useEffect(() => {
     if (activeTab === 'pending') fetchPendingOrders();
-  }, [pendingFilter]);
+  }, [activeTab, pendingFilter, fetchPendingOrders]);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col" onClick={() => showNotifDropdown && setShowNotifDropdown(false)}>
